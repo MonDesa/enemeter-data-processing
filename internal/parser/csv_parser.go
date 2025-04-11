@@ -52,7 +52,14 @@ func (p *CSVParser) Parse() ([]EnemeterRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			// If we already have an error, we'll keep the original error
+			if err == nil {
+				err = fmt.Errorf("error closing file: %w", closeErr)
+			}
+		}
+	}()
 
 	reader := csv.NewReader(file)
 	var records []EnemeterRecord
@@ -65,11 +72,7 @@ func (p *CSVParser) Parse() ([]EnemeterRecord, error) {
 	recordCount := 0
 	sampleCounter := 0
 
-	for {
-		if p.options.MaxRecords > 0 && len(records) >= p.options.MaxRecords {
-			break
-		}
-
+	for p.options.MaxRecords <= 0 || len(records) < p.options.MaxRecords {
 		row, err := reader.Read()
 		if err == io.EOF {
 			break
@@ -158,7 +161,13 @@ func (p *CSVParser) GetRecordCount() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			if err == nil {
+				err = closeErr
+			}
+		}
+	}()
 
 	fileInfo, err := file.Stat()
 	if err != nil {
@@ -204,7 +213,13 @@ func (p *CSVParser) StreamRecords(callback func(record EnemeterRecord) error) er
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			if err == nil {
+				err = fmt.Errorf("error closing file: %w", closeErr)
+			}
+		}
+	}()
 
 	reader := csv.NewReader(file)
 

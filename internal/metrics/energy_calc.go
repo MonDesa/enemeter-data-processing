@@ -351,19 +351,6 @@ func (mt *metricsTracker) finalizeMetrics() EnergyMetrics {
 	return metrics
 }
 
-func calculateAverage(values []float64) float64 {
-	if len(values) == 0 {
-		return 0
-	}
-
-	var sum float64
-	for _, v := range values {
-		sum += v
-	}
-
-	return sum / float64(len(values))
-}
-
 func GetSpecificMetric(metrics EnergyMetrics, metricType MetricType) (interface{}, error) {
 	switch metricType {
 	case MetricTotalEnergy:
