@@ -1,0 +1,56 @@
+name: QA Check Pipeline
+
+on:
+  pull_request:
+    branches: [develop]
+
+jobs:
+  qa-validation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.23
+
+      - name: Configure Go Module Cache
+        run: |
+          mkdir -p \$HOME/.cache/go-mod
+          echo "export GOMODCACHE=\$HOME/.cache/go-mod" >> \$GITHUB_ENV
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: \$HOME/.cache/go-mod
+          key: \${{ runner.os }}-go-\${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            \${{ runner.os }}-go-
+
+      - name: Install Dependencies
+        run: go mod download
+
+      - name: Check Formatting
+        run: |
+          diff=$(go fmt ./...)
+          if [ -n "$diff" ]; then
+            echo "Code not formatted properly! Run 'go fmt ./...' locally."
+            echo "$diff"
+            exit 1
+          else
+            echo "All files properly formatted."
+          fi
+
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.0.2
+      
+      - name: Run Linter
+        run: |
+          golangci-lint run ./... --timeout=5m
+
+      - name: Vet Code
+        run: go vet ./...
