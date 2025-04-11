@@ -1,4 +1,5 @@
 # Exclude build files
 dist/
+data/
 vendor/
 .env

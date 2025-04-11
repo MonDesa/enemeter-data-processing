@@ -1,3 +1,6 @@
 package commands
 
-var CurrentVersion = "v0.0.0"
+const (
+	CurrentVersion = "1.0.0"
+	AppName        = "ENEMETER Data Processing Tool"
+)
