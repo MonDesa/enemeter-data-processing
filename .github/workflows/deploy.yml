@@ -16,8 +16,8 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: \${{ vars.RUBRION_APP_ID }}
-          private-key: \${{ secrets.RUBRION_APP_SECRET }}
+          app-id: ${{ vars.RUBRION_APP_ID }}
+          private-key: ${{ secrets.RUBRION_APP_SECRET }}
 
       - name: Set Git User Identity
         run: |
@@ -29,7 +29,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: develop
-          token: \${{ steps.app-token.outputs.token }}
+          token: ${{ steps.app-token.outputs.token }}
       
       - name: Ensure Develop is Up to Date
         run: |
@@ -37,11 +37,17 @@ jobs:
           git checkout develop
           git pull origin develop
       
-      - name: Merge Develop into Main
+      - name: Check if Main Branch Exists and Merge
         run: |
-          git checkout main
-          git merge --no-ff develop
-          git push origin main
+          if git ls-remote --heads origin main | grep main; then
+            echo "Main branch exists, proceeding with merge"
+            git checkout main || git checkout -b main
+            git merge --no-ff develop -m "chore: merge develop into main for release v${VERSION}"
+          else
+            echo "Main branch does not exist, creating from develop"
+            git checkout -b main
+          fi
+          git push -u origin main
         
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -51,15 +57,15 @@ jobs:
       - name: Determine Release Version
         id: version
         run: |
-          if [ -n "\${{ github.event.inputs.release_version }}" ]; then
-            VERSION=\${{ github.event.inputs.release_version }}
+          if [ -n "${{ github.event.inputs.release_version }}" ]; then
+            VERSION=${{ github.event.inputs.release_version }}
           else
-            LAST_TAG=\$(git tag --sort=-v:refname | head -n 1 | sed 's/v//')
-            IFS='.' read -r major minor patch <<< "\$LAST_TAG"
-            VERSION="\$major.\$minor.\$((patch + 1))"
+            LAST_TAG=$(git tag --sort=-v:refname | head -n 1 | sed 's/v//')
+            IFS='.' read -r major minor patch <<< "$LAST_TAG"
+            VERSION="$major.$minor.$((patch + 1))"
           fi
-          echo "VERSION=\$VERSION" >> \$GITHUB_ENV
-          echo "Release version set to \$VERSION"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Release version set to $VERSION"
       
       - name: Verify Version in Code
         run: |
@@ -85,7 +91,7 @@ jobs:
 
       - name: Create Git Tag
         run: |
-          git tag "v\${VERSION}"
+          git tag "v${VERSION}"
           git push origin --tags
 
       - name: Set Up Go
@@ -95,31 +101,29 @@ jobs:
 
       - name: Build Cross-Platform Binaries
         run: |
-          if [ -z "\${{ vars.PROJECT_NAME }}" ]; then
-            echo "ERROR: PROJECT_NAME GitHub variable is not set. Please set it in repository settings."
-            exit 1
+          if [ -z "${{ vars.PROJECT_NAME }}" ]; then
+            PROJECT_NAME="enemeter-data-processing"
+            echo "Using default project name: $PROJECT_NAME"
+          else
+            PROJECT_NAME="${{ vars.PROJECT_NAME }}"
+            echo "Using project name from settings: $PROJECT_NAME"
           fi
           
-          PROJECT_NAME="\${{ vars.PROJECT_NAME }}"
-          echo "Using project name: \$PROJECT_NAME"
-          
           go mod tidy
-          echo "Building CLI for version \$VERSION"
-          mkdir -p dist
-      
-          GOOS=linux GOARCH=amd64 go build -o dist/\$PROJECT_NAME-linux -ldflags="-X '\$PROJECT_NAME/commands.CurrentVersion=\${VERSION}'" main.go || exit 1
-          GOOS=windows GOARCH=amd64 go build -o dist/\$PROJECT_NAME.exe -ldflags="-X '\$PROJECT_NAME/commands.CurrentVersion=\${VERSION}'" main.go || exit 1
-          GOOS=darwin GOARCH=amd64 go build -o dist/\$PROJECT_NAME-mac -ldflags="-X '\$PROJECT_NAME/commands.CurrentVersion=\${VERSION}'" main.go || exit 1
-      
-          echo "Build completed. Contents of dist/:"
-          ls -lh dist/
+          echo "Building CLI for version $VERSION"
+          
+          make build-all VERSION=$VERSION
 
       - name: Create GitHub Release
         run: |
-          PROJECT_NAME="\${{ vars.PROJECT_NAME }}"
-          gh release create "v\${VERSION}" \
-            --title "Release v\${VERSION}" \
-            --notes-file CHANGELOG.md \
-            dist/\$PROJECT_NAME-linux dist/\$PROJECT_NAME.exe dist/\$PROJECT_NAME-mac
+          PROJECT_NAME="${{ vars.PROJECT_NAME }}"
+          if [ -z "$PROJECT_NAME" ]; then
+            PROJECT_NAME="enemeter-data-processing"
+          fi
+          
+          gh release create "v${VERSION}" \
+            --title "Release v${VERSION}" \
+            --notes-file docs/CHANGELOG.md \
+            dist/$PROJECT_NAME-linux dist/$PROJECT_NAME.exe dist/$PROJECT_NAME-mac
         env:
-          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
