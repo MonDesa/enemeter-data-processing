@@ -54,7 +54,6 @@ func (p *CSVParser) Parse() ([]EnemeterRecord, error) {
 	}
 	defer func() {
 		if closeErr := file.Close(); closeErr != nil {
-			// If we already have an error, we'll keep the original error
 			if err == nil {
 				err = fmt.Errorf("error closing file: %w", closeErr)
 			}
@@ -64,13 +63,23 @@ func (p *CSVParser) Parse() ([]EnemeterRecord, error) {
 	reader := csv.NewReader(file)
 	var records []EnemeterRecord
 
-	baseTime := time.Now()
-	if p.options.StartTime != nil {
-		baseTime = *p.options.StartTime
+	if p.options.StartTime == nil {
+		return nil, fmt.Errorf("start time must be provided")
 	}
+
+	// Use the provided start time since it's required
+	startTime := *p.options.StartTime
+
 	accumulatedTimeMs := int64(0)
 	recordCount := 0
 	sampleCounter := 0
+
+	const (
+		timeCol    = 0
+		voltageCol = 1
+		currentCol = 2
+		tempCol    = 3
+	)
 
 	for p.options.MaxRecords <= 0 || len(records) < p.options.MaxRecords {
 		row, err := reader.Read()
@@ -91,28 +100,28 @@ func (p *CSVParser) Parse() ([]EnemeterRecord, error) {
 			return nil, fmt.Errorf("invalid row format, expected 4 fields but got %d", len(row))
 		}
 
-		timeDelta, err := strconv.ParseInt(row[0], 10, 64)
+		timeDelta, err := strconv.ParseInt(row[timeCol], 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse time delta: %w", err)
 		}
 
-		tempMiliCelsius, err := strconv.ParseInt(row[1], 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse temperature: %w", err)
-		}
-
-		voltageMicroV, err := strconv.ParseInt(row[2], 10, 64)
+		voltageMicroV, err := strconv.ParseInt(row[voltageCol], 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse voltage: %w", err)
 		}
 
-		currentNanoA, err := strconv.ParseInt(row[3], 10, 64)
+		currentNanoA, err := strconv.ParseInt(row[currentCol], 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse current: %w", err)
 		}
 
+		tempMiliCelsius, err := strconv.ParseInt(row[tempCol], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse temperature: %w", err)
+		}
+
 		accumulatedTimeMs += timeDelta
-		timestamp := baseTime.Add(time.Duration(accumulatedTimeMs) * time.Millisecond)
+		timestamp := startTime.Add(time.Duration(accumulatedTimeMs) * time.Millisecond)
 
 		if p.options.StartTime != nil && timestamp.Before(*p.options.StartTime) {
 			continue
@@ -223,13 +232,23 @@ func (p *CSVParser) StreamRecords(callback func(record EnemeterRecord) error) er
 
 	reader := csv.NewReader(file)
 
-	baseTime := time.Now()
-	if p.options.StartTime != nil {
-		baseTime = *p.options.StartTime
+	if p.options.StartTime == nil {
+		return fmt.Errorf("start time must be provided")
 	}
+
+	// Use the provided start time since it's required
+	startTime := *p.options.StartTime
+
 	accumulatedTimeMs := int64(0)
 	recordCount := 0
 	sampleCounter := 0
+
+	const (
+		timeCol    = 0
+		voltageCol = 1
+		currentCol = 2
+		tempCol    = 3
+	)
 
 	for {
 		row, err := reader.Read()
@@ -254,28 +273,28 @@ func (p *CSVParser) StreamRecords(callback func(record EnemeterRecord) error) er
 			return fmt.Errorf("invalid row format, expected 4 fields but got %d", len(row))
 		}
 
-		timeDelta, err := strconv.ParseInt(row[0], 10, 64)
+		timeDelta, err := strconv.ParseInt(row[timeCol], 10, 64)
 		if err != nil {
 			return fmt.Errorf("failed to parse time delta: %w", err)
 		}
 
-		tempMiliCelsius, err := strconv.ParseInt(row[1], 10, 64)
-		if err != nil {
-			return fmt.Errorf("failed to parse temperature: %w", err)
-		}
-
-		voltageMicroV, err := strconv.ParseInt(row[2], 10, 64)
+		voltageMicroV, err := strconv.ParseInt(row[voltageCol], 10, 64)
 		if err != nil {
 			return fmt.Errorf("failed to parse voltage: %w", err)
 		}
 
-		currentNanoA, err := strconv.ParseInt(row[3], 10, 64)
+		currentNanoA, err := strconv.ParseInt(row[currentCol], 10, 64)
 		if err != nil {
 			return fmt.Errorf("failed to parse current: %w", err)
 		}
 
+		tempMiliCelsius, err := strconv.ParseInt(row[tempCol], 10, 64)
+		if err != nil {
+			return fmt.Errorf("failed to parse temperature: %w", err)
+		}
+
 		accumulatedTimeMs += timeDelta
-		timestamp := baseTime.Add(time.Duration(accumulatedTimeMs) * time.Millisecond)
+		timestamp := startTime.Add(time.Duration(accumulatedTimeMs) * time.Millisecond)
 
 		if p.options.StartTime != nil && timestamp.Before(*p.options.StartTime) {
 			continue

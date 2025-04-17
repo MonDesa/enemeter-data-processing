@@ -64,8 +64,8 @@ func SetupProcessCommand() *flag.FlagSet {
 	processCmd.Int("sample", 1, "Process every Nth record (1 = all records)")
 	processCmd.Int("max", 0, "Maximum records to process (0 = no limit)")
 
-	// Time filtering options
-	processCmd.String("start", "", "Start time for filtering (format: YYYY-MM-DD[THH:MM:SS])")
+	// Make start time required and clarify that it must include time of day
+	processCmd.String("start", "", "Start time for measurements (format: YYYY-MM-DD HH:MM:SS) - REQUIRED")
 	processCmd.String("end", "", "End time for filtering (format: YYYY-MM-DD[THH:MM:SS])")
 	processCmd.String("window", "", "Time window to process (e.g., 1h, 30m, 24h)")
 
@@ -85,20 +85,23 @@ func SetupProcessCommand() *flag.FlagSet {
 	processCmd.Usage = func() {
 		fmt.Println(AppName + " - Process and analyze ENEMETER data")
 		fmt.Println("\nUsage:")
-		fmt.Println("  enemeter-cli process [options]")
+		fmt.Println("  enemeter-data-processing process [options]")
+		fmt.Println("\nRequired Parameters:")
+		fmt.Println("  --input=<file>     Input CSV file")
+		fmt.Println("  --start=<time>     Start time in format YYYY-MM-DD HH:MM:SS (must include time of day)")
 		fmt.Println("\nExamples:")
-		fmt.Println("  # Basic usage")
-		fmt.Println("  enemeter-cli process --input=data/data.csv")
-		fmt.Println("\n  # Extract specific metrics")
-		fmt.Println("  enemeter-cli process --input=data.csv --metric=average_power")
-		fmt.Println("\n  # Filter by time window")
-		fmt.Println("  enemeter-cli process --input=data.csv --start=2025-04-01 --end=2025-04-02")
-		fmt.Println("\n  # Process large file efficiently")
-		fmt.Println("  enemeter-cli process --input=big-data.csv --stream --sample=10")
-		fmt.Println("\n  # Get temperature statistics in JSON format")
-		fmt.Println("  enemeter-cli process --input=data.csv --metric=temperature --format=json")
-		fmt.Println("\n  # Save output to a file")
-		fmt.Println("  enemeter-cli process --input=data.csv --output=report.txt")
+		fmt.Println("  Basic usage")
+		fmt.Println("  enemeter-data-processing process --input=data/data.csv --start=\"2023-04-01 12:00:00\"")
+		fmt.Println("\n  Extract specific metrics")
+		fmt.Println("  enemeter-data-processing process --input=data.csv --start=\"2023-04-01 08:30:00\" --metric=average_power")
+		fmt.Println("\n  Filter by time window")
+		fmt.Println("  enemeter-data-processing process --input=data.csv --start=\"2023-04-01\" --end=\"2023-04-02\"")
+		fmt.Println("\n  Process large file efficiently")
+		fmt.Println("  enemeter-data-processing process --input=big-data.csv --start=\"2023-04-01\" --stream --sample=10")
+		fmt.Println("\n  Get temperature statistics in JSON format")
+		fmt.Println("  enemeter-data-processing process --input=data.csv --start=\"2023-04-01\" --metric=temperature --format=json")
+		fmt.Println("\n  Save output to a file")
+		fmt.Println("  enemeter-data-processing process --input=data.csv --start=\"2023-04-01\" --output=report.txt")
 		fmt.Println("\nOptions:")
 		processCmd.PrintDefaults()
 	}
@@ -115,20 +118,90 @@ func ParseCommandLineOptions(cmd *flag.FlagSet) CommandLineOptions {
 
 	// Processing options
 	useStreaming := cmd.Lookup("stream").Value.(flag.Getter).Get().(bool)
-	sampleRate := int(cmd.Lookup("sample").Value.(flag.Getter).Get().(int64))
-	maxRecords := int(cmd.Lookup("max").Value.(flag.Getter).Get().(int64))
+
+	// Fix type casting issues - convert to int64 safely
+	sampleRateVal := cmd.Lookup("sample").Value.(flag.Getter).Get()
+	var sampleRate int
+	switch v := sampleRateVal.(type) {
+	case int64:
+		sampleRate = int(v)
+	case int:
+		sampleRate = v
+	default:
+		sampleRate = 1 // Default value if conversion fails
+	}
+
+	maxRecordsVal := cmd.Lookup("max").Value.(flag.Getter).Get()
+	var maxRecords int
+	switch v := maxRecordsVal.(type) {
+	case int64:
+		maxRecords = int(v)
+	case int:
+		maxRecords = v
+	default:
+		maxRecords = 0 // Default value if conversion fails
+	}
 
 	// Time filtering options
 	startTime := cmd.Lookup("start").Value.String()
 	endTime := cmd.Lookup("end").Value.String()
 	timeWindow := cmd.Lookup("window").Value.String()
 
-	// Data filtering options
-	minTemp := cmd.Lookup("min-temp").Value.(flag.Getter).Get().(int64)
-	voltageMin := cmd.Lookup("volt-min").Value.(flag.Getter).Get().(int64)
-	voltageMax := cmd.Lookup("volt-max").Value.(flag.Getter).Get().(int64)
-	currentMin := cmd.Lookup("curr-min").Value.(flag.Getter).Get().(int64)
-	currentMax := cmd.Lookup("curr-max").Value.(flag.Getter).Get().(int64)
+	// Data filtering options - safe type conversion for int64 values
+	minTempVal := cmd.Lookup("min-temp").Value.(flag.Getter).Get()
+	var minTemp int64
+	switch v := minTempVal.(type) {
+	case int64:
+		minTemp = v
+	case int:
+		minTemp = int64(v)
+	default:
+		minTemp = 0 // Default value if conversion fails
+	}
+
+	voltageMinVal := cmd.Lookup("volt-min").Value.(flag.Getter).Get()
+	var voltageMin int64
+	switch v := voltageMinVal.(type) {
+	case int64:
+		voltageMin = v
+	case int:
+		voltageMin = int64(v)
+	default:
+		voltageMin = 0
+	}
+
+	voltageMaxVal := cmd.Lookup("volt-max").Value.(flag.Getter).Get()
+	var voltageMax int64
+	switch v := voltageMaxVal.(type) {
+	case int64:
+		voltageMax = v
+	case int:
+		voltageMax = int64(v)
+	default:
+		voltageMax = 0
+	}
+
+	currentMinVal := cmd.Lookup("curr-min").Value.(flag.Getter).Get()
+	var currentMin int64
+	switch v := currentMinVal.(type) {
+	case int64:
+		currentMin = v
+	case int:
+		currentMin = int64(v)
+	default:
+		currentMin = 0
+	}
+
+	currentMaxVal := cmd.Lookup("curr-max").Value.(flag.Getter).Get()
+	var currentMax int64
+	switch v := currentMaxVal.(type) {
+	case int64:
+		currentMax = v
+	case int:
+		currentMax = int64(v)
+	default:
+		currentMax = 0
+	}
 
 	// Specific metrics extraction
 	metric := cmd.Lookup("metric").Value.String()
@@ -167,7 +240,12 @@ func ParseCommandLineOptions(cmd *flag.FlagSet) CommandLineOptions {
 func ProcessCommand(options CommandLineOptions) error {
 	// Validate input file
 	if options.InputFile == "" {
-		return fmt.Errorf("input file is required")
+		return fmt.Errorf("input file is required (--input)")
+	}
+
+	// Validate start time (now required)
+	if options.StartTime == "" {
+		return fmt.Errorf("start time is required (--start)")
 	}
 
 	// Ensure input file exists
@@ -258,15 +336,21 @@ func buildFilterOptions(cliOptions CommandLineOptions) (parser.FilterOptions, er
 		MaxRecords: cliOptions.MaxRecords,
 	}
 
-	// Process time filters
-	if cliOptions.StartTime != "" {
-		startTime, err := parseTimeString(cliOptions.StartTime)
-		if err != nil {
-			return filterOptions, fmt.Errorf("invalid start time: %w", err)
-		}
-		filterOptions.StartTime = &startTime
+	// Process start time (required with time of day)
+	startTime, err := parseTimeString(cliOptions.StartTime)
+	if err != nil {
+		return filterOptions, fmt.Errorf("invalid start time: %w. Must provide both date and time (YYYY-MM-DD HH:MM:SS)", err)
 	}
 
+	// Check if time component is included (not midnight exactly)
+	if startTime.Hour() == 0 && startTime.Minute() == 0 && startTime.Second() == 0 {
+		// Only warn if the time appears to be exactly midnight
+		fmt.Println("Warning: Start time appears to be exactly midnight. Make sure you provided the time of day, not just the date.")
+	}
+
+	filterOptions.StartTime = &startTime
+
+	// Process end time if specified
 	if cliOptions.EndTime != "" {
 		endTime, err := parseTimeString(cliOptions.EndTime)
 		if err != nil {
@@ -538,14 +622,14 @@ func formatMetricAsText(metric interface{}, metricType metrics.MetricType) strin
 		sb.WriteString(fmt.Sprintf("Total Discharge Time: %.2f seconds\n", batteryStats.TotalDischargeTime))
 		sb.WriteString(fmt.Sprintf("Total Charge Time: %.2f seconds\n", batteryStats.TotalChargeTime))
 		sb.WriteString(fmt.Sprintf("Discharge to Charge Ratio: %.2f%%\n", batteryStats.DischargeToChargeRatio*100))
-		sb.WriteString(fmt.Sprintf("Average Discharge Rate: %.4f watts\n", batteryStats.AverageDischargeRate))
+		sb.WriteString(fmt.Sprintf("Average Discharge Rate: %.4f watts\n\n", batteryStats.AverageDischargeRate))
 
 	case metrics.MetricSolarContribution:
 		solarStats := metric.(metrics.SolarStats)
 		sb.WriteString(fmt.Sprintf("Total Energy Produced: %.4f joules\n", solarStats.TotalEnergyProduced))
 		sb.WriteString(fmt.Sprintf("Average Output: %.4f watts\n", solarStats.AverageOutput))
 		sb.WriteString(fmt.Sprintf("Peak Output: %.4f watts\n", solarStats.PeakOutput))
-		sb.WriteString(fmt.Sprintf("Contribution to Energy: %.2f%%\n", solarStats.ContributionPercentage))
+		sb.WriteString(fmt.Sprintf("Contribution to Energy: %.2f%%\n\n", solarStats.ContributionPercentage))
 
 	default:
 		sb.WriteString(fmt.Sprintf("No text formatter available for metric type: %s\n", metricType))

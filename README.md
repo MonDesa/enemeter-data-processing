@@ -42,42 +42,31 @@ cd enemeter-data-processing
 make build
 ```
 
-## Data Format
-
-ENEMETER data is provided in CSV format with four columns:
-
-1. **Time Delta (milliseconds)** - Time elapsed since the last measurement
-2. **Temperature (millicelsius)** - System temperature
-3. **Voltage (microvolts)** - Battery voltage
-4. **Current (nanoamperes)** - System current (positive when charging, negative when discharging)
-
-Example:
-```
-0000052051,0004815430,-1275169536,0000023192
-0000000047,0004815430,-1275169536,0000023192
-0000000047,0004815790,-1276443264,0000023192
-```
-
 ## Basic Usage
 
-Process a CSV file with default settings:
+Process a CSV file with required parameters:
 
 ```bash
-./enemeter-data-processing --input=data/data.csv
+./enemeter-data-processing process --input=data/esp32.csv --start="2023-04-01 08:00:00"
 ```
+
+The `--start` parameter specifies the starting time of the measurements and is required. 
+**Important:** You must include both the date AND time of day in the format "YYYY-MM-DD HH:MM:SS".
 
 Save results to a text file:
 
 ```bash
-./enemeter-data-processing --input=data/data.csv --output=report.txt
+./enemeter-data-processing process --input=data/esp32.csv --start="2023-04-01 08:00:00" --output=esp32_report.txt
 ```
 
 ## Command-line Options
 
-### Input/Output Options
+### Required Parameters
+- `--input=<path>`: Path to the input CSV file
+- `--start=<time>`: Start time for measurements (format: YYYY-MM-DD HH:MM:SS) - must include time of day
 
-- `--input=<path>`: Path to the input CSV file (required)
-- `--output=<path>`: Path to save the output report (optional)
+### Optional Parameters
+- `--output=<path>`: Path to save the output report
 - `--format=<text|json|csv>`: Output format (default: text)
 
 ### Processing Options
@@ -88,8 +77,8 @@ Save results to a text file:
 
 ### Time Filtering Options
 
-- `--start=<time>`: Start time for filtering (format: YYYY-MM-DD[THH:MM:SS])
-- `--end=<time>`: End time for filtering (format: YYYY-MM-DD[THH:MM:SS])
+- `--start=<time>`: (Required) Start time for measurements (format: YYYY-MM-DD HH:MM:SS) - must include time of day
+- `--end=<time>`: End time for filtering (format: YYYY-MM-DD HH:MM:SS)
 - `--window=<duration>`: Time window to process (e.g., 1h, 30m, 24h)
 
 ### Data Filtering Options
@@ -123,7 +112,7 @@ Save results to a text file:
 Process a CSV file and display all metrics:
 
 ```bash
-./enemeter-data-processing --input=data/data.csv
+./enemeter-data-processing process --input=data/esp32.csv --start="2023-04-01 08:00:00"
 ```
 
 ### Memory-Efficient Processing for Large Files
@@ -131,23 +120,21 @@ Process a CSV file and display all metrics:
 Use streaming mode with sampling for very large files:
 
 ```bash
-./enemeter-data-processing --input=big-data.csv --stream --sample=10
+./enemeter-data-processing process --input=big-data.csv --start="2023-04-01 10:15:30" --stream --sample=10
 ```
 
 This processes only every 10th record, reducing memory requirements.
 
-### Filtering by Time
+### Time-Based Analysis
 
-Process data from a specific time range:
-
-```bash
-./enemeter-data-processing --input=data.csv --start="2025-04-01" --end="2025-04-02"
-```
-
-Process the last 24 hours of data:
+To analyze data from a specific time period:
 
 ```bash
-./enemeter-data-processing --input=data.csv --window=24h
+# Analyze data between specific dates and times
+./enemeter-data-processing process --input=esp32.csv --start="2023-04-01 08:00:00" --end="2023-04-02 17:30:00"
+
+# Analyze data for a specific duration
+./enemeter-data-processing process --input=esp32.csv --start="2023-04-01 12:45:00" --window=24h
 ```
 
 ### Extracting Specific Metrics
@@ -155,13 +142,13 @@ Process the last 24 hours of data:
 Get only temperature statistics in JSON format:
 
 ```bash
-./enemeter-data-processing --input=data.csv --metric=temperature --format=json
+./enemeter-data-processing process --input=esp32.csv --start="2023-04-01 08:00:00" --metric=temperature --format=json
 ```
 
 Extract hourly energy consumption in CSV format:
 
 ```bash
-./enemeter-data-processing --input=data.csv --metric=energy_by_hour --format=csv
+./enemeter-data-processing process --input=esp32.csv --start="2023-04-01 08:00:00" --metric=energy_by_hour --format=csv
 ```
 
 ### Filtering by Data Values
@@ -169,77 +156,15 @@ Extract hourly energy consumption in CSV format:
 Process only records with voltage between specified values:
 
 ```bash
-./enemeter-data-processing --input=data.csv --volt-min=3500000 --volt-max=4200000
+./enemeter-data-processing process --input=esp32.csv --start="2023-04-01 08:00:00" --volt-min=3500000 --volt-max=4200000
 ```
 
 Process only records where temperature is above a certain threshold:
 
 ```bash
-./enemeter-data-processing --input=data.csv --min-temp=25000
+./enemeter-data-processing process --input=esp32.csv --start="2023-04-01 08:00:00" --min-temp=25000
 ```
 
 ## Output Examples
 
 ### Text Output (Default)
-
-```
-========== ENEMETER DATA PROCESSING REPORT ==========
-Input File: data.csv
-Date: 2025-04-09 10:15:32
-Data Points: 1253
-Time Range: 2025-04-08 08:30:15 to 2025-04-09 08:30:10
-
-ENERGY METRICS
--------------
-Total Energy Consumed: 156.4578 joules
-Average Power: 0.0548 watts
-Peak Power: 0.1245 watts
-Estimated Energy per Day: 157.9825 joules
-Measurement Duration: 86395.00 seconds
-
-TEMPERATURE STATISTICS
----------------------
-Minimum Temperature: 22.45 °C
-Maximum Temperature: 28.95 °C
-Average Temperature: 24.75 °C
-
-... additional sections ...
-```
-
-### JSON Output
-
-```json
-{
-  "TotalJoules": 156.4578,
-  "AveragePowerWatts": 0.0548,
-  "PeakPowerWatts": 0.1245,
-  "JoulesPerDay": 157.9825,
-  "DurationSeconds": 86395.0,
-  "TemperatureStats": {
-    "MinTempCelsius": 22.45,
-    "MaxTempCelsius": 28.95,
-    "AvgTempCelsius": 24.75
-  },
-  ...
-}
-```
-
-### CSV Output
-
-```
-Metric,Value
-TotalJoules,156.457800
-AveragePowerWatts,0.054800
-PeakPowerWatts,0.124500
-JoulesPerDay,157.982500
-DurationSeconds,86395.00
-...
-```
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-This project is licensed under the GPL License - see the LICENSE file for details.
