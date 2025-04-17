@@ -193,10 +193,12 @@ func newMetricsTracker(options MetricsOptions) *metricsTracker {
 	}
 }
 
-func (mt *metricsTracker) processRecord(record parser.EnemeterRecord, index int) {
-	volts := float64(record.VoltageMicroV) / 1_000_000.0
-	amps := float64(record.CurrentNanoA) / 1_000_000_000.0
+func (mt *metricsTracker) processRecord(record parser.EnemeterRecord, _ int) {
 	tempCelsius := float64(record.TempMiliCelsius) / 1000.0
+	volts := float64(record.VoltageMicroV) / 1000000.0
+	amps := float64(record.CurrentNanoA) / 1000000000.0
+
+	powerVolts := math.Abs(volts)
 
 	if mt.firstTimestamp {
 		mt.startTime = record.Timestamp
@@ -238,7 +240,7 @@ func (mt *metricsTracker) processRecord(record parser.EnemeterRecord, index int)
 		mt.maxCharging = amps
 	}
 
-	instantPower := volts * amps
+	instantPower := powerVolts * amps
 
 	if math.Abs(instantPower) > mt.peakPower {
 		mt.peakPower = math.Abs(instantPower)
