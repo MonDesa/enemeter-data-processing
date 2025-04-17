@@ -1,4 +1,3 @@
-VERSION ?= 1.0.0
 PROJECT_NAME = enemeter-data-processing
 
 .PHONY: build build-all clean test build-analyze

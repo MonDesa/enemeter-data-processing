@@ -101,26 +101,20 @@ jobs:
 
       - name: Build Cross-Platform Binaries
         run: |
-          if [ -z "${{ vars.PROJECT_NAME }}" ]; then
-            PROJECT_NAME="enemeter-data-processing"
-            echo "Using default project name: $PROJECT_NAME"
-          else
+            if [ -z "${{ vars.PROJECT_NAME }}" ]; then
+              echo "ERROR: PROJECT_NAME GitHub variable is not set. Please set it in repository settings."
+              exit 1
+            fi
+            
             PROJECT_NAME="${{ vars.PROJECT_NAME }}"
-            echo "Using project name from settings: $PROJECT_NAME"
-          fi
-          
-          go mod tidy
-          echo "Building CLI for version $VERSION"
-          
-          make build-all VERSION=$VERSION
+            echo "Using project name: $PROJECT_NAME"  
+            go mod tidy
+            echo "Building CLI for version $VERSION"
+            make build-all VERSION=$VERSION
 
       - name: Create GitHub Release
         run: |
           PROJECT_NAME="${{ vars.PROJECT_NAME }}"
-          if [ -z "$PROJECT_NAME" ]; then
-            PROJECT_NAME="enemeter-data-processing"
-          fi
-          
           gh release create "v${VERSION}" \
             --title "Release v${VERSION}" \
             --notes-file docs/CHANGELOG.md \
