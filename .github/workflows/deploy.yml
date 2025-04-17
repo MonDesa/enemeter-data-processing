@@ -36,6 +36,19 @@ jobs:
           git fetch origin develop
           git checkout develop
           git pull origin develop
+
+      - name: Determine Release Version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.release_version }}" ]; then
+            VERSION=${{ github.event.inputs.release_version }}
+          else
+            LAST_TAG=$(git tag --sort=-v:refname | head -n 1 | sed 's/v//')
+            IFS='.' read -r major minor patch <<< "$LAST_TAG"
+            VERSION="$major.$minor.$((patch + 1))"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Release version set to $VERSION"
       
       - name: Check if Main Branch Exists and Merge
         run: |
@@ -54,19 +67,6 @@ jobs:
         with:
           node-version: lts/*
 
-      - name: Determine Release Version
-        id: version
-        run: |
-          if [ -n "${{ github.event.inputs.release_version }}" ]; then
-            VERSION=${{ github.event.inputs.release_version }}
-          else
-            LAST_TAG=$(git tag --sort=-v:refname | head -n 1 | sed 's/v//')
-            IFS='.' read -r major minor patch <<< "$LAST_TAG"
-            VERSION="$major.$minor.$((patch + 1))"
-          fi
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "Release version set to $VERSION"
-      
       - name: Verify Version in Code
         run: |
           VERSION_IN_CODE=$(grep "CurrentVersion =" internal/commands/version.go | awk -F'"' '{print $2}')
