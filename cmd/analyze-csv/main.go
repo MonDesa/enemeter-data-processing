@@ -24,7 +24,11 @@ func main() {
 		fmt.Printf("Error opening file: %v\n", err)
 		os.Exit(1)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			fmt.Printf("Warning: Error closing file: %v\n", closeErr)
+		}
+	}()
 
 	reader := csv.NewReader(file)
 
@@ -89,7 +93,7 @@ func main() {
 	fmt.Printf("\nSUGGESTED UNITS FOR YOUR ESP32 DATA:\n")
 	fmt.Printf("---------------------------------------------------------------\n")
 
-	suggestUnits(minTemp, maxTemp, minVoltage, maxVoltage, minCurrent, maxCurrent)
+	suggestUnits(0, maxTemp, minVoltage, maxVoltage, minCurrent, maxCurrent)
 
 	fmt.Printf("ENEMETER DATA FORMAT INFORMATION:\n")
 	fmt.Printf("---------------------------------------------------------------\n")
