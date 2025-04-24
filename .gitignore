@@ -1,5 +1,7 @@
 # Exclude build files
 dist/
+
+# Exclude generated and input files
 data/
-vendor/
+charts/
 .env

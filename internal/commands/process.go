@@ -292,7 +292,8 @@ func ProcessCommand(options CommandLineOptions) error {
 	// Process data either with streaming or regular mode
 	if options.UseStreaming {
 		fmt.Println("Using streaming mode for memory-efficient processing...")
-		energyMetrics, err = metrics.StreamCalculateMetrics(csvParser, metricsOptions)
+		// Use our wrapper function that handles different parameter types
+		energyMetrics, err = metrics.StreamCalculateMetricsWrapper(csvParser, metricsOptions)
 		if err != nil {
 			return fmt.Errorf("failed to process CSV data in streaming mode: %v", err)
 		}

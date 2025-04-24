@@ -29,6 +29,20 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "graphics":
+		graphicsCmd := commands.SetupGraphicsCommand()
+		if err := graphicsCmd.Parse(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing arguments: %v\n", err)
+			graphicsCmd.Usage()
+			os.Exit(1)
+		}
+
+		options := commands.ParseGraphicsOptions(graphicsCmd)
+		if err := commands.GraphicsCommand(options); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "version":
 		fmt.Printf("%s\n", commands.CurrentVersion)
 
@@ -48,6 +62,7 @@ func printUsage() {
 	fmt.Println("  enemeter-data-processing <command> [options]")
 	fmt.Println("\nAvailable Commands:")
 	fmt.Println("  process     Process ENEMETER data files")
+	fmt.Println("  graphics    Generate charts from ENEMETER data")
 	fmt.Println("  version     Show version information")
 	fmt.Println("  help        Show help information")
 	fmt.Println("\nFor command-specific help:")
