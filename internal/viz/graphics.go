@@ -7,8 +7,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-echarts/go-echarts/v2/charts"
@@ -412,18 +415,22 @@ func (g *GraphicsGenerator) GenerateChart(graphType GraphType, metrics metrics.E
 		return "", fmt.Errorf("no data records available")
 	}
 
-	// Sort records by timestamp
+	// Report initial memory usage
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	fmt.Printf("Initial memory usage: %.2f MB\n", float64(m.Alloc)/1024/1024)
+
+	// Sort records by timestamp - using a more efficient sort algorithm
+	fmt.Printf("Sorting %d records by timestamp...\n", len(g.records))
 	sortedRecords := make([]parser.EnemeterRecord, len(g.records))
 	copy(sortedRecords, g.records)
 
-	// Sort by timestamp
-	for i := 0; i < len(sortedRecords)-1; i++ {
-		for j := i + 1; j < len(sortedRecords); j++ {
-			if sortedRecords[j].Timestamp.Before(sortedRecords[i].Timestamp) {
-				sortedRecords[i], sortedRecords[j] = sortedRecords[j], sortedRecords[i]
-			}
-		}
-	}
+	// Use Go's built-in sort instead of bubble sort for better performance
+	sort.Slice(sortedRecords, func(i, j int) bool {
+		return sortedRecords[i].Timestamp.Before(sortedRecords[j].Timestamp)
+	})
+
+	fmt.Println("Sorting complete.")
 
 	// Create appropriate chart based on type
 	var filename string
@@ -444,6 +451,10 @@ func (g *GraphicsGenerator) GenerateChart(graphType GraphType, metrics metrics.E
 		return "", fmt.Errorf("unsupported graph type: %s", graphType)
 	}
 
+	// Report final memory usage
+	runtime.ReadMemStats(&m)
+	fmt.Printf("Final memory usage: %.2f MB\n", float64(m.Alloc)/1024/1024)
+
 	if err != nil {
 		return "", err
 	}
@@ -451,35 +462,166 @@ func (g *GraphicsGenerator) GenerateChart(graphType GraphType, metrics metrics.E
 	return filename, nil
 }
 
-// GenerateAllCharts generates all charts and enables time scaling
-func (g *GraphicsGenerator) GenerateAllCharts(metrics metrics.EnergyMetrics) (map[GraphType]string, error) {
-	// Create output directory if it doesn't exist
-	if err := os.MkdirAll(g.outputDir, os.ModePerm); err != nil {
-		return nil, err
+// Add a chunkedPreprocess helper function that processes records in parallel chunks
+func chunkedPreprocess(
+	records []parser.EnemeterRecord,
+	startTime time.Time,
+	processFunc func(record parser.EnemeterRecord, timeFromStart float64) (string, interface{}, bool),
+	timeFactor float64,
+	progressName string,
+) ([]string, []opts.LineData) {
+	// Calculate number of workers based on CPU count
+	numWorkers := runtime.NumCPU()
+	if numWorkers > 8 {
+		numWorkers = 8 // Limit to 8 workers to avoid excessive memory usage
 	}
 
-	// Generate all charts
-	chartTypes := []GraphType{
-		GraphTypePower,
-		GraphTypeEnergy,
-		GraphTypeVoltage,
-		GraphTypeCurrent,
-		GraphTypeTemperature,
+	// Don't use more workers than records
+	if numWorkers > len(records) {
+		numWorkers = len(records)
 	}
 
-	results := make(map[GraphType]string)
-	for _, chartType := range chartTypes {
-		filename, err := g.GenerateChart(chartType, metrics)
-		if err != nil {
-			return results, err
+	chunkSize := len(records) / numWorkers
+	if chunkSize < 1 {
+		chunkSize = 1
+	}
+
+	fmt.Printf("Processing %s data using %d parallel workers with chunk size %d...\n",
+		progressName, numWorkers, chunkSize)
+
+	// Set up channels for result collection
+	type resultItem struct {
+		xValue string
+		yValue interface{}
+		index  int
+	}
+
+	resultChan := make(chan resultItem, len(records))
+	var wg sync.WaitGroup
+
+	// Set up progress tracking
+	var processedCount int32
+	progressInterval := len(records) / 20 // Report progress ~20 times
+	if progressInterval < 1 {
+		progressInterval = 1
+	}
+
+	// Launch progress reporter
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				processed := atomic.LoadInt32(&processedCount)
+				fmt.Printf("  %s: Processed %d/%d records (%.1f%%)\n",
+					progressName,
+					processed,
+					len(records),
+					float64(processed)*100.0/float64(len(records)))
+			case <-done:
+				return
+			}
 		}
-		results[chartType] = filename
+	}()
+
+	// Process data in parallel chunks
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			start := workerID * chunkSize
+			end := (workerID + 1) * chunkSize
+			if workerID == numWorkers-1 {
+				end = len(records)
+			}
+
+			// Track last timestamp to avoid adding too many points
+			lastTimestampAdded := time.Time{}
+			minTimeDelta := 0.0
+			if len(records) > 100000 {
+				minTimeDelta = 2.0
+			} else if len(records) > 500000 {
+				minTimeDelta = 5.0
+			}
+
+			for i := start; i < end; i++ {
+				record := records[i]
+
+				// Skip points that are too close in time if we have many records
+				if !lastTimestampAdded.IsZero() &&
+					minTimeDelta > 0 &&
+					record.Timestamp.Sub(lastTimestampAdded).Seconds() < minTimeDelta {
+					continue
+				}
+
+				// Calculate time from start with scaling factor
+				timeFromStart := record.Timestamp.Sub(startTime).Seconds() * timeFactor
+
+				// Call the provided processing function
+				xValue, yValue, shouldAdd := processFunc(record, timeFromStart)
+
+				if shouldAdd {
+					lastTimestampAdded = record.Timestamp
+					resultChan <- resultItem{xValue, yValue, i}
+				}
+
+				// Update progress every N records
+				if i%progressInterval == 0 {
+					atomic.AddInt32(&processedCount, int32(progressInterval))
+				}
+			}
+		}(w)
 	}
 
-	return results, nil
+	// Close results channel when all workers are done
+	go func() {
+		wg.Wait()
+		close(resultChan)
+		close(done) // Stop the progress reporter
+		fmt.Printf("  %s: Processing complete. Collected %d data points.\n", progressName, atomic.LoadInt32(&processedCount))
+	}()
+
+	// Collect and sort results
+	resultMap := make(map[int]struct {
+		xVal string
+		yVal interface{}
+	})
+	for r := range resultChan {
+		resultMap[r.index] = struct {
+			xVal string
+			yVal interface{}
+		}{r.xValue, r.yValue}
+	}
+
+	// Convert to ordered slices
+	xAxisData := make([]string, 0, len(resultMap))
+	yData := make([]opts.LineData, 0, len(resultMap))
+
+	// Create ordered list of indices
+	indices := make([]int, 0, len(resultMap))
+	for idx := range resultMap {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+
+	// Create final data arrays in proper order
+	for _, idx := range indices {
+		res := resultMap[idx]
+		xAxisData = append(xAxisData, res.xVal)
+		yData = append(yData, opts.LineData{
+			Value: res.yVal,
+			Name:  records[idx].Timestamp.Format(time.RFC3339),
+		})
+	}
+
+	return xAxisData, yData
 }
 
-// Update the generateEnergyChart function to use title and subtitle
+// Fix generateEnergyChart by using the CalculateCumulativeEnergy function instead of GetEnergyJoules
 func (g *GraphicsGenerator) generateEnergyChart(records []parser.EnemeterRecord, metrics metrics.EnergyMetrics) (string, error) {
 	// Create a line chart
 	line := charts.NewLine()
@@ -492,39 +634,6 @@ func (g *GraphicsGenerator) generateEnergyChart(records []parser.EnemeterRecord,
 	startTime := records[0].Timestamp
 	endTime := records[len(records)-1].Timestamp
 	duration := endTime.Sub(startTime)
-
-	// Add progress reporting
-	fmt.Printf("Preparing data for energy chart (%d records)...\n", len(records))
-
-	// For extremely large datasets, do aggressive pre-sampling before any other processing
-	const maxRecordsToProcess = 100000 // Cap at 100K records for initial processing
-
-	var recordsToProcess []parser.EnemeterRecord
-	if len(records) > maxRecordsToProcess {
-		fmt.Printf("Dataset very large (%d records). Pre-sampling to %d records...\n",
-			len(records), maxRecordsToProcess)
-
-		// Use simple even sampling for the pre-sampling phase
-		step := float64(len(records)) / float64(maxRecordsToProcess)
-		recordsToProcess = make([]parser.EnemeterRecord, 0, maxRecordsToProcess)
-
-		for i := 0.0; i < float64(len(records)); i += step {
-			idx := int(i)
-			if idx >= len(records) {
-				continue
-			}
-			recordsToProcess = append(recordsToProcess, records[idx])
-		}
-
-		// Make sure we include the last record for proper time range
-		if len(recordsToProcess) > 0 && recordsToProcess[len(recordsToProcess)-1].Timestamp != records[len(records)-1].Timestamp {
-			recordsToProcess = append(recordsToProcess, records[len(records)-1])
-		}
-
-		fmt.Printf("Pre-sampled to %d records\n", len(recordsToProcess))
-	} else {
-		recordsToProcess = records
-	}
 
 	// Configure chart
 	title := "Cumulative Energy Consumption"
@@ -598,87 +707,62 @@ func (g *GraphicsGenerator) generateEnergyChart(records []parser.EnemeterRecord,
 
 	// Use our energy calculation utility for accurate energy calculation
 	fmt.Println("Calculating cumulative energy...")
-	energyCalc := NewEnergyCalculation(recordsToProcess)
+	energyCalc := NewEnergyCalculation(records)
 	timestamps, energyValues := energyCalc.CalculateCumulativeEnergy()
 
-	// Check if we have enough data points to continue
-	if len(timestamps) < 2 {
-		return "", fmt.Errorf("not enough valid data points for energy chart")
+	// Debug the time range of our energy data
+	if len(timestamps) > 1 {
+		fmt.Printf("Energy data time range: %s to %s (%.2f hours)\n",
+			timestamps[0].Format("2006-01-02 15:04:05"),
+			timestamps[len(timestamps)-1].Format("2006-01-02 15:04:05"),
+			timestamps[len(timestamps)-1].Sub(timestamps[0]).Hours())
 	}
 
-	fmt.Printf("Processing %d energy data points...\n", len(timestamps))
+	// Process data points to create chart data
+	fmt.Printf("Converting energy data to chart format (%d points)...\n", len(timestamps))
 
-	// For very large datasets, we need to pre-downsample before regular processing
-	if len(timestamps) > 10000 {
-		fmt.Printf("Pre-downsampling energy data from %d points to ~5000 points for processing efficiency...\n",
-			len(timestamps))
+	// Process with a reasonable time delta to avoid too many points
+	// Adjust based on total time range to ensure we don't sample too aggressively
+	minTimeDelta := 0.0 // seconds
+	totalHours := endTime.Sub(startTime).Hours()
 
-		// Pre-downsampling to ~5000 points for efficiency using even sampling
-		step := float64(len(timestamps)) / 5000.0
-		newTs := make([]time.Time, 0, 5000+2) // +2 for first and last points
-		newVals := make([]float64, 0, 5000+2)
-
-		// Always include first point
-		newTs = append(newTs, timestamps[0])
-		newVals = append(newVals, energyValues[0])
-
-		// Sample middle points
-		for i := 1.0; i < float64(len(timestamps)-1); i += step {
-			idx := int(i)
-			if idx >= len(timestamps) {
-				break
-			}
-			newTs = append(newTs, timestamps[idx])
-			newVals = append(newVals, energyValues[idx])
-		}
-
-		// Always include last point
-		newTs = append(newTs, timestamps[len(timestamps)-1])
-		newVals = append(newVals, energyValues[len(energyValues)-1])
-
-		timestamps = newTs
-		energyValues = newVals
-
-		fmt.Printf("Pre-downsampled to %d points\n", len(timestamps))
+	// Adjust sampling based on dataset size and time range
+	if len(timestamps) > 100000 {
+		// For large datasets, use ~0.05% of total time range as minimum delta
+		minTimeDelta = totalHours * 3600 * 0.0005 // in seconds
+	} else if len(timestamps) > 50000 {
+		// For medium datasets, use ~0.02% of total time range
+		minTimeDelta = totalHours * 3600 * 0.0002 // in seconds
+	} else if totalHours > 12 {
+		// For datasets spanning multiple hours, ensure at least 1000-2000 points
+		minTimeDelta = totalHours * 3600 / 2000 // target ~2000 points max
 	}
 
-	// Normalize time measurements - take a point every interval to reduce chart size
-	minTimeDelta := 1.0 // seconds
-	if len(records) > 100000 {
-		minTimeDelta = 5.0 // increase for very large datasets
-	}
-
-	lastTimestampAdded := startTime.Add(-time.Second) // Ensure first point is always added
+	fmt.Printf("Using minimum time delta of %.1f seconds between points (to limit chart density)\n", minTimeDelta)
 
 	xAxisData := make([]string, 0, len(timestamps))
 	energyData := make([]opts.LineData, 0, len(timestamps))
 
-	// Set a maximum number of points to process to avoid infinite loops
-	maxPointsToProcess := len(timestamps)
-	if len(timestamps) > 100000 {
-		fmt.Println("Warning: Very large dataset. Limiting to 100,000 points for chart rendering.")
-		maxPointsToProcess = 100000
+	lastTimestampAdded := time.Time{} // Zero value to ensure first point is added
+
+	// Always add first and last points regardless of time delta
+	if len(timestamps) > 0 {
+		// Add first point
+		firstTimeFromStart := timestamps[0].Sub(startTime).Seconds() * timeFactor
+		xAxisData = append(xAxisData, fmt.Sprintf("%.2f", firstTimeFromStart))
+		energyData = append(energyData, opts.LineData{
+			Value: energyValues[0] * energyFactor,
+			Name:  timestamps[0].Format(g.timeFormat),
+		})
+		lastTimestampAdded = timestamps[0]
 	}
 
-	// Process with progress reporting
-	progressInterval := maxPointsToProcess / 20 // Report progress 20 times
-	if progressInterval < 1 {
-		progressInterval = 1
-	}
-
-	pointsProcessed := 0
-
-	for i := 0; i < maxPointsToProcess; i++ {
-		// Stop processing if we reach the end of the array
-		if i >= len(timestamps) {
-			break
-		}
-
-		// Skip if less than minTimeDelta since last added point
-		if timestamps[i].Sub(lastTimestampAdded).Seconds() < minTimeDelta && i > 0 {
+	// Process intermediate points with delta filtering
+	for i := 1; i < len(timestamps)-1; i++ {
+		// Skip points that are too close in time
+		if minTimeDelta > 0 && timestamps[i].Sub(lastTimestampAdded).Seconds() < minTimeDelta {
 			continue
 		}
-		lastTimestampAdded = timestamps[i]
 
 		// Calculate time from start with scaling factor
 		timeFromStart := timestamps[i].Sub(startTime).Seconds() * timeFactor
@@ -690,91 +774,32 @@ func (g *GraphicsGenerator) generateEnergyChart(records []parser.EnemeterRecord,
 		xAxisData = append(xAxisData, timeRounded)
 		energyData = append(energyData, opts.LineData{
 			Value: scaledEnergy,
-			Name:  timestamps[i].Format(g.timeFormat), // Keep absolute time in tooltip
+			Name:  timestamps[i].Format(g.timeFormat),
 		})
 
-		pointsProcessed++
-
-		// Report progress periodically
-		if i > 0 && i%progressInterval == 0 {
-			fmt.Printf("Processed %d/%d energy points (%.1f%%)\n",
-				i, maxPointsToProcess, float64(i)*100/float64(maxPointsToProcess))
-		}
+		lastTimestampAdded = timestamps[i]
 	}
 
-	fmt.Printf("Total points processed: %d\n", pointsProcessed)
-
-	// Apply downsampling if needed
-	if len(xAxisData) > g.maxDataPoints {
-		fmt.Printf("Downsampling from %d to %d data points using '%s' algorithm...\n",
-			len(xAxisData), g.maxDataPoints, g.samplingMode)
-
-		// Convert string times back to Time objects for downsampling
-		times := make([]time.Time, 0, len(xAxisData))
-		values := make([]float64, 0, len(xAxisData))
-
-		for i := range xAxisData {
-			if i >= len(energyData) {
-				continue
-			}
-
-			seconds, err := strconv.ParseFloat(xAxisData[i], 64)
-			if err != nil {
-				continue
-			}
-
-			// Safe type assertion
-			energyValue, ok := energyData[i].Value.(float64)
-			if !ok {
-				continue
-			}
-
-			times = append(times, startTime.Add(time.Duration(seconds/timeFactor*float64(time.Second))))
-			values = append(values, energyValue)
-		}
-
-		// Safety check: if we couldn't convert any points, use simple sampling
-		if len(times) == 0 || len(values) == 0 {
-			fmt.Println("Warning: Could not convert data for downsampling. Using simple sampling instead.")
-
-			// Simple sampling
-			if len(xAxisData) > 0 && len(energyData) > 0 {
-				step := float64(len(xAxisData)) / float64(g.maxDataPoints)
-				newXData := make([]string, 0, g.maxDataPoints)
-				newEnergyData := make([]opts.LineData, 0, g.maxDataPoints)
-
-				for i := 0.0; i < float64(len(xAxisData)); i += step {
-					idx := int(i)
-					if idx >= len(xAxisData) || idx >= len(energyData) {
-						continue
-					}
-					newXData = append(newXData, xAxisData[idx])
-					newEnergyData = append(newEnergyData, energyData[idx])
-				}
-
-				xAxisData = newXData
-				energyData = newEnergyData
-			}
-		} else {
-			// Only downsample if we have data
-			sampledTimes, sampledValues := g.downsampleData(times, values, g.maxDataPoints)
-
-			// Convert back to chart format
-			xAxisData = make([]string, len(sampledTimes))
-			energyData = make([]opts.LineData, len(sampledValues))
-
-			for i := range sampledTimes {
-				timeFromStart := sampledTimes[i].Sub(startTime).Seconds() * timeFactor
-				xAxisData[i] = fmt.Sprintf("%.2f", timeFromStart)
-				energyData[i] = opts.LineData{
-					Value: sampledValues[i],
-					Name:  sampledTimes[i].Format(g.timeFormat),
-				}
-			}
-		}
+	// Always add the last point if we have points
+	if len(timestamps) > 1 {
+		lastTimeFromStart := timestamps[len(timestamps)-1].Sub(startTime).Seconds() * timeFactor
+		xAxisData = append(xAxisData, fmt.Sprintf("%.2f", lastTimeFromStart))
+		energyData = append(energyData, opts.LineData{
+			Value: energyValues[len(energyValues)-1] * energyFactor,
+			Name:  timestamps[len(timestamps)-1].Format(g.timeFormat),
+		})
 	}
 
-	// Safety check to prevent chart rendering with no data
+	// Debug final chart data range
+	if len(xAxisData) > 0 {
+		firstX, _ := strconv.ParseFloat(xAxisData[0], 64)
+		lastX, _ := strconv.ParseFloat(xAxisData[len(xAxisData)-1], 64)
+		fmt.Printf("Chart X-axis range: %.2f to %.2f %s\n", firstX, lastX, timeUnit)
+		durationInHours := (lastX - firstX) / timeFactor / 3600
+		fmt.Printf("Chart time span: %.2f hours\n", durationInHours)
+	}
+
+	// Check if we have any data points
 	if len(xAxisData) == 0 || len(energyData) == 0 {
 		return "", fmt.Errorf("no valid data points to generate chart")
 	}
@@ -783,18 +808,26 @@ func (g *GraphicsGenerator) generateEnergyChart(records []parser.EnemeterRecord,
 
 	// Add data to chart
 	line.SetXAxis(xAxisData).
-		AddSeries(fmt.Sprintf("Energy (%s)", energyUnit), energyData).
+		AddSeries("Energy", energyData).
 		SetSeriesOptions(
 			charts.WithLineChartOpts(opts.LineChart{
-				Smooth: opts.Bool(false),
+				Smooth: opts.Bool(true),
 			}),
 			charts.WithAreaStyleOpts(opts.AreaStyle{
 				Opacity: 0.2,
 			}),
+			charts.WithMarkLineNameTypeItemOpts(opts.MarkLineNameTypeItem{
+				Name: "Average",
+				Type: "average",
+			}),
+			charts.WithMarkPointNameTypeItemOpts(opts.MarkPointNameTypeItem{
+				Name: "Max",
+				Type: "max",
+			}),
 		)
 
 	// Create output file
-	fmt.Println("Creating energy chart file...")
+	fmt.Println("Creating output file...")
 	filename := filepath.Join(g.outputDir, "energy_chart.html")
 	f, err := os.Create(filename)
 	if err != nil {
@@ -803,7 +836,7 @@ func (g *GraphicsGenerator) generateEnergyChart(records []parser.EnemeterRecord,
 	defer f.Close()
 
 	// Render the chart
-	fmt.Println("Rendering energy chart to file...")
+	fmt.Println("Rendering chart to file...")
 	if err := line.Render(f); err != nil {
 		return "", err
 	}
@@ -812,7 +845,7 @@ func (g *GraphicsGenerator) generateEnergyChart(records []parser.EnemeterRecord,
 	return filename, nil
 }
 
-// Add the generatePowerChart function
+// generatePowerChart creates a chart showing power consumption over time
 func (g *GraphicsGenerator) generatePowerChart(records []parser.EnemeterRecord, metrics metrics.EnergyMetrics) (string, error) {
 	// Create a line chart
 	line := charts.NewLine()
@@ -835,39 +868,6 @@ func (g *GraphicsGenerator) generatePowerChart(records []parser.EnemeterRecord, 
 		powerUnit,
 		metrics.PeakPowerWatts*powerFactor,
 		powerUnit)
-
-	// Add progress reporting for large datasets
-	fmt.Printf("Preparing data for power chart (%d records)...\n", len(records))
-
-	// For extremely large datasets, do aggressive pre-sampling before any other processing
-	const maxRecordsToProcess = 100000 // Cap at 100K records for initial processing
-
-	var recordsToProcess []parser.EnemeterRecord
-	if len(records) > maxRecordsToProcess {
-		fmt.Printf("Dataset very large (%d records). Pre-sampling to %d records...\n",
-			len(records), maxRecordsToProcess)
-
-		// Use simple even sampling for the pre-sampling phase
-		step := float64(len(records)) / float64(maxRecordsToProcess)
-		recordsToProcess = make([]parser.EnemeterRecord, 0, maxRecordsToProcess)
-
-		for i := 0.0; i < float64(len(records)); i += step {
-			idx := int(i)
-			if idx >= len(records) {
-				continue
-			}
-			recordsToProcess = append(recordsToProcess, records[idx])
-		}
-
-		// Make sure we include the last record for proper time range
-		if len(recordsToProcess) > 0 && recordsToProcess[len(recordsToProcess)-1].Timestamp != records[len(records)-1].Timestamp {
-			recordsToProcess = append(recordsToProcess, records[len(records)-1])
-		}
-
-		fmt.Printf("Pre-sampled to %d records\n", len(recordsToProcess))
-	} else {
-		recordsToProcess = records
-	}
 
 	// Set up chart options
 	line.SetGlobalOptions(
@@ -931,68 +931,34 @@ func (g *GraphicsGenerator) generatePowerChart(records []parser.EnemeterRecord, 
 		}),
 	)
 
-	// Prepare data - use simpler sequential processing to avoid parallelism issues
-	fmt.Println("Processing data points...")
-	xAxisData := make([]string, 0, len(recordsToProcess))
-	powerData := make([]opts.LineData, 0, len(recordsToProcess))
-
-	// Process records sequentially with a higher minimum time delta for extremely large datasets
-	minTimeDelta := 1.0 // seconds
-	if len(records) > 500000 {
-		minTimeDelta = 5.0 // For very large datasets, increase minimum time between points
-	}
-
-	lastTimestampAdded := startTime.Add(-time.Second)
-
-	// Use a more aggressive filtering approach for large datasets
-	for i, record := range recordsToProcess {
-		// Skip points with excessive intervals to avoid visual gaps
-		if i > 0 && record.Timestamp.Sub(recordsToProcess[i-1].Timestamp) > time.Minute*5 {
-			continue
-		}
-
-		// Skip points that are too close in time
-		if record.Timestamp.Sub(lastTimestampAdded).Seconds() < minTimeDelta {
-			continue
-		}
-
-		lastTimestampAdded = record.Timestamp
-
+	// Process data in parallel using the chunkedPreprocess helper
+	processFunc := func(record parser.EnemeterRecord, timeFromStart float64) (string, interface{}, bool) {
 		adapter := NewAdapter(record)
 		powerWatts := adapter.GetPowerWatts() * powerFactor
-
-		// Calculate time from start with scaling factor
-		timeFromStart := record.Timestamp.Sub(startTime).Seconds() * timeFactor
 		timeRounded := fmt.Sprintf("%.2f", timeFromStart)
 
-		xAxisData = append(xAxisData, timeRounded)
-		powerData = append(powerData, opts.LineData{
-			Value: powerWatts,
-			Name:  record.Timestamp.Format(g.timeFormat),
-		})
-
-		// Print progress for very large datasets
-		if len(records) > 100000 && i > 0 && i%10000 == 0 {
-			fmt.Printf("Processed %d/%d points (%.1f%%)\n",
-				i, len(recordsToProcess), float64(i)*100/float64(len(recordsToProcess)))
-		}
+		return timeRounded, powerWatts, true
 	}
 
-	fmt.Printf("Collected %d data points for chart\n", len(xAxisData))
+	xAxisData, powerData := chunkedPreprocess(
+		records,
+		startTime,
+		processFunc,
+		timeFactor,
+		"Power chart",
+	)
 
-	// Apply downsampling if needed and we have enough points
+	// Apply downsampling if needed
 	if len(xAxisData) > g.maxDataPoints {
 		fmt.Printf("Downsampling from %d to %d data points using '%s' algorithm...\n",
 			len(xAxisData), g.maxDataPoints, g.samplingMode)
 
-		// Convert string times back to Time objects for downsampling
 		times := make([]time.Time, 0, len(xAxisData))
-		values := make([]float64, 0, len(xAxisData))
+		values := make([]float64, 0, len(powerData))
 
-		// Convert with careful error checking
 		for i := range xAxisData {
 			if i >= len(powerData) {
-				continue // Avoid index out of bounds
+				continue
 			}
 
 			seconds, err := strconv.ParseFloat(xAxisData[i], 64)
@@ -1000,7 +966,6 @@ func (g *GraphicsGenerator) generatePowerChart(records []parser.EnemeterRecord, 
 				continue
 			}
 
-			// Safe type assertion
 			powerValue, ok := powerData[i].Value.(float64)
 			if !ok {
 				continue
@@ -1010,11 +975,9 @@ func (g *GraphicsGenerator) generatePowerChart(records []parser.EnemeterRecord, 
 			values = append(values, powerValue)
 		}
 
-		// Only downsample if we have data
 		if len(times) > 0 && len(values) > 0 {
 			sampledTimes, sampledValues := g.downsampleData(times, values, g.maxDataPoints)
 
-			// Convert back to chart format
 			xAxisData = make([]string, len(sampledTimes))
 			powerData = make([]opts.LineData, len(sampledValues))
 
@@ -1033,8 +996,6 @@ func (g *GraphicsGenerator) generatePowerChart(records []parser.EnemeterRecord, 
 	if len(xAxisData) == 0 || len(powerData) == 0 {
 		return "", fmt.Errorf("no valid data points to generate chart")
 	}
-
-	fmt.Printf("Final chart will have %d data points\n", len(xAxisData))
 
 	// Add data to chart
 	line.SetXAxis(xAxisData).
@@ -1057,7 +1018,6 @@ func (g *GraphicsGenerator) generatePowerChart(records []parser.EnemeterRecord, 
 		)
 
 	// Create output file
-	fmt.Println("Creating output file...")
 	filename := filepath.Join(g.outputDir, "power_chart.html")
 	f, err := os.Create(filename)
 	if err != nil {
@@ -1066,16 +1026,14 @@ func (g *GraphicsGenerator) generatePowerChart(records []parser.EnemeterRecord, 
 	defer f.Close()
 
 	// Render the chart
-	fmt.Println("Rendering chart to file...")
 	if err := line.Render(f); err != nil {
 		return "", err
 	}
 
-	fmt.Println("Chart generation completed successfully!")
 	return filename, nil
 }
 
-// Add the generateVoltageChart function
+// generateVoltageChart creates a chart showing voltage over time
 func (g *GraphicsGenerator) generateVoltageChart(records []parser.EnemeterRecord) (string, error) {
 	// Create a line chart
 	line := charts.NewLine()
@@ -1095,37 +1053,7 @@ func (g *GraphicsGenerator) generateVoltageChart(records []parser.EnemeterRecord
 		startTime.Format("2006-01-02 15:04:05"),
 		duration.Round(time.Second).String())
 
-	// Add progress reporting for large datasets
-	fmt.Printf("Preparing data for voltage chart (%d records)...\n", len(records))
-
-	// For extremely large datasets, do pre-sampling
-	const maxRecordsToProcess = 100000
-	var recordsToProcess []parser.EnemeterRecord
-
-	if len(records) > maxRecordsToProcess {
-		fmt.Printf("Dataset very large (%d records). Pre-sampling to %d records...\n",
-			len(records), maxRecordsToProcess)
-
-		step := float64(len(records)) / float64(maxRecordsToProcess)
-		recordsToProcess = make([]parser.EnemeterRecord, 0, maxRecordsToProcess)
-
-		for i := 0.0; i < float64(len(records)); i += step {
-			idx := int(i)
-			if idx >= len(records) {
-				continue
-			}
-			recordsToProcess = append(recordsToProcess, records[idx])
-		}
-
-		if len(recordsToProcess) > 0 && recordsToProcess[len(recordsToProcess)-1].Timestamp != records[len(records)-1].Timestamp {
-			recordsToProcess = append(recordsToProcess, records[len(records)-1])
-		}
-
-		fmt.Printf("Pre-sampled to %d records\n", len(recordsToProcess))
-	} else {
-		recordsToProcess = records
-	}
-
+	// Set up chart options with title, subtitle, and axis labels
 	line.SetGlobalOptions(
 		charts.WithInitializationOpts(opts.Initialization{
 			Theme:  g.chartTheme,
@@ -1184,62 +1112,28 @@ func (g *GraphicsGenerator) generateVoltageChart(records []parser.EnemeterRecord
 		}),
 	)
 
-	// Prepare data for chart
-	fmt.Println("Processing voltage data points...")
-	xAxisData := make([]string, 0, len(recordsToProcess))
-	voltageData := make([]opts.LineData, 0, len(recordsToProcess))
-
-	// Process with higher time delta for large datasets
-	minTimeDelta := 1.0 // seconds
-	if len(records) > 500000 {
-		minTimeDelta = 5.0 // For very large datasets, increase minimum time between points
-	}
-
-	lastTimestampAdded := startTime.Add(-time.Second) // Ensure first point is always added
-	reportInterval := len(recordsToProcess) / 10      // Report progress 10 times
-	if reportInterval < 1 {
-		reportInterval = 1
-	}
-
-	// Use raw microvolts for data and apply scaling factor
-	for i, record := range recordsToProcess {
-		// Skip points with excessive intervals to avoid visual gaps
-		if i > 0 && record.Timestamp.Sub(recordsToProcess[i-1].Timestamp) > time.Minute*5 {
-			continue
-		}
-
-		// Skip if less than minTimeDelta since last added point
-		if record.Timestamp.Sub(lastTimestampAdded).Seconds() < minTimeDelta && i > 0 {
-			continue
-		}
-		lastTimestampAdded = record.Timestamp
-
+	// Process data in parallel using the chunkedPreprocess helper
+	processFunc := func(record parser.EnemeterRecord, timeFromStart float64) (string, interface{}, bool) {
 		adapter := NewAdapter(record)
-		voltage := float64(adapter.GetVoltage()) * voltageFactor // Apply voltage scaling
-
-		// Calculate time from start with scaling factor
-		timeFromStart := record.Timestamp.Sub(startTime).Seconds() * timeFactor
+		voltage := adapter.GetVoltageVolts() * voltageFactor
 		timeRounded := fmt.Sprintf("%.2f", timeFromStart)
 
-		xAxisData = append(xAxisData, timeRounded)
-		voltageData = append(voltageData, opts.LineData{
-			Value: voltage,
-			Name:  record.Timestamp.Format(g.timeFormat), // Keep absolute time in tooltip
-		})
-
-		// Report progress for large datasets
-		if len(recordsToProcess) > 10000 && i > 0 && i%reportInterval == 0 {
-			fmt.Printf("Processed %d/%d voltage points (%.1f%%)\n",
-				i, len(recordsToProcess), float64(i)*100/float64(len(recordsToProcess)))
-		}
+		return timeRounded, voltage, true
 	}
+
+	xAxisData, voltageData := chunkedPreprocess(
+		records,
+		startTime,
+		processFunc,
+		timeFactor,
+		"Voltage chart",
+	)
 
 	// Apply downsampling if needed
 	if len(xAxisData) > g.maxDataPoints {
 		fmt.Printf("Downsampling from %d to %d data points using '%s' algorithm...\n",
 			len(xAxisData), g.maxDataPoints, g.samplingMode)
 
-		// Same downsampling logic as in power chart
 		times := make([]time.Time, 0, len(xAxisData))
 		values := make([]float64, 0, len(voltageData))
 
@@ -1262,11 +1156,9 @@ func (g *GraphicsGenerator) generateVoltageChart(records []parser.EnemeterRecord
 			values = append(values, voltageValue)
 		}
 
-		// Only downsample if we have data
 		if len(times) > 0 && len(values) > 0 {
 			sampledTimes, sampledValues := g.downsampleData(times, values, g.maxDataPoints)
 
-			// Convert back to chart format
 			xAxisData = make([]string, len(sampledTimes))
 			voltageData = make([]opts.LineData, len(sampledValues))
 
@@ -1281,23 +1173,32 @@ func (g *GraphicsGenerator) generateVoltageChart(records []parser.EnemeterRecord
 		}
 	}
 
-	fmt.Printf("Final voltage chart will have %d data points\n", len(xAxisData))
+	// Check if we have any data points
+	if len(xAxisData) == 0 || len(voltageData) == 0 {
+		return "", fmt.Errorf("no valid data points to generate chart")
+	}
 
 	// Add data to chart
 	line.SetXAxis(xAxisData).
-		AddSeries(fmt.Sprintf("Voltage (%s)", voltageUnit), voltageData).
+		AddSeries("Voltage", voltageData).
 		SetSeriesOptions(
 			charts.WithLineChartOpts(opts.LineChart{
 				Smooth: opts.Bool(true),
+			}),
+			charts.WithAreaStyleOpts(opts.AreaStyle{
+				Opacity: 0.2,
 			}),
 			charts.WithMarkLineNameTypeItemOpts(opts.MarkLineNameTypeItem{
 				Name: "Average",
 				Type: "average",
 			}),
+			charts.WithMarkPointNameTypeItemOpts(opts.MarkPointNameTypeItem{
+				Name: "Max",
+				Type: "max",
+			}),
 		)
 
 	// Create output file
-	fmt.Println("Creating voltage chart file...")
 	filename := filepath.Join(g.outputDir, "voltage_chart.html")
 	f, err := os.Create(filename)
 	if err != nil {
@@ -1306,16 +1207,14 @@ func (g *GraphicsGenerator) generateVoltageChart(records []parser.EnemeterRecord
 	defer f.Close()
 
 	// Render the chart
-	fmt.Println("Rendering voltage chart to file...")
 	if err := line.Render(f); err != nil {
 		return "", err
 	}
 
-	fmt.Println("Voltage chart generation completed successfully!")
 	return filename, nil
 }
 
-// Add the generateCurrentChart function
+// generateCurrentChart creates a chart showing current over time
 func (g *GraphicsGenerator) generateCurrentChart(records []parser.EnemeterRecord) (string, error) {
 	// Create a line chart
 	line := charts.NewLine()
@@ -1335,37 +1234,7 @@ func (g *GraphicsGenerator) generateCurrentChart(records []parser.EnemeterRecord
 		startTime.Format("2006-01-02 15:04:05"),
 		duration.Round(time.Second).String())
 
-	// Add progress reporting for large datasets
-	fmt.Printf("Preparing data for current chart (%d records)...\n", len(records))
-
-	// For extremely large datasets, do pre-sampling
-	const maxRecordsToProcess = 100000
-	var recordsToProcess []parser.EnemeterRecord
-
-	if len(records) > maxRecordsToProcess {
-		fmt.Printf("Dataset very large (%d records). Pre-sampling to %d records...\n",
-			len(records), maxRecordsToProcess)
-
-		step := float64(len(records)) / float64(maxRecordsToProcess)
-		recordsToProcess = make([]parser.EnemeterRecord, 0, maxRecordsToProcess)
-
-		for i := 0.0; i < float64(len(records)); i += step {
-			idx := int(i)
-			if idx >= len(records) {
-				continue
-			}
-			recordsToProcess = append(recordsToProcess, records[idx])
-		}
-
-		if len(recordsToProcess) > 0 && recordsToProcess[len(recordsToProcess)-1].Timestamp != records[len(records)-1].Timestamp {
-			recordsToProcess = append(recordsToProcess, records[len(records)-1])
-		}
-
-		fmt.Printf("Pre-sampled to %d records\n", len(recordsToProcess))
-	} else {
-		recordsToProcess = records
-	}
-
+	// Set up chart options with title, subtitle, and axis labels
 	line.SetGlobalOptions(
 		charts.WithInitializationOpts(opts.Initialization{
 			Theme:  g.chartTheme,
@@ -1424,60 +1293,28 @@ func (g *GraphicsGenerator) generateCurrentChart(records []parser.EnemeterRecord
 		}),
 	)
 
-	// Prepare data for chart
-	fmt.Println("Processing current data points...")
-	xAxisData := make([]string, 0, len(recordsToProcess))
-	currentData := make([]opts.LineData, 0, len(recordsToProcess))
-
-	minTimeDelta := 1.0 // seconds
-	if len(records) > 500000 {
-		minTimeDelta = 5.0 // For very large datasets, increase minimum time between points
-	}
-
-	lastTimestampAdded := startTime.Add(-time.Second) // Ensure first point is always added
-	reportInterval := len(recordsToProcess) / 10      // Report progress 10 times
-	if reportInterval < 1 {
-		reportInterval = 1
-	}
-
-	for i, record := range recordsToProcess {
-		// Skip points with excessive intervals to avoid visual gaps
-		if i > 0 && record.Timestamp.Sub(recordsToProcess[i-1].Timestamp) > time.Minute*5 {
-			continue
-		}
-
-		// Skip if less than minTimeDelta since last added point
-		if record.Timestamp.Sub(lastTimestampAdded).Seconds() < minTimeDelta && i > 0 {
-			continue
-		}
-		lastTimestampAdded = record.Timestamp
-
+	// Process data in parallel using the chunkedPreprocess helper
+	processFunc := func(record parser.EnemeterRecord, timeFromStart float64) (string, interface{}, bool) {
 		adapter := NewAdapter(record)
-		current := float64(adapter.GetCurrent()) * currentFactor // Apply current scaling
-
-		// Calculate time from start with scaling factor
-		timeFromStart := record.Timestamp.Sub(startTime).Seconds() * timeFactor
+		current := adapter.GetCurrentAmps() * currentFactor
 		timeRounded := fmt.Sprintf("%.2f", timeFromStart)
 
-		xAxisData = append(xAxisData, timeRounded)
-		currentData = append(currentData, opts.LineData{
-			Value: current,
-			Name:  record.Timestamp.Format(g.timeFormat), // Keep absolute time in tooltip
-		})
-
-		// Report progress for large datasets
-		if len(recordsToProcess) > 10000 && i > 0 && i%reportInterval == 0 {
-			fmt.Printf("Processed %d/%d current points (%.1f%%)\n",
-				i, len(recordsToProcess), float64(i)*100/float64(len(recordsToProcess)))
-		}
+		return timeRounded, current, true
 	}
+
+	xAxisData, currentData := chunkedPreprocess(
+		records,
+		startTime,
+		processFunc,
+		timeFactor,
+		"Current chart",
+	)
 
 	// Apply downsampling if needed
 	if len(xAxisData) > g.maxDataPoints {
 		fmt.Printf("Downsampling from %d to %d data points using '%s' algorithm...\n",
 			len(xAxisData), g.maxDataPoints, g.samplingMode)
 
-		// Same downsampling logic as in other charts
 		times := make([]time.Time, 0, len(xAxisData))
 		values := make([]float64, 0, len(currentData))
 
@@ -1500,11 +1337,9 @@ func (g *GraphicsGenerator) generateCurrentChart(records []parser.EnemeterRecord
 			values = append(values, currentValue)
 		}
 
-		// Only downsample if we have data
 		if len(times) > 0 && len(values) > 0 {
 			sampledTimes, sampledValues := g.downsampleData(times, values, g.maxDataPoints)
 
-			// Convert back to chart format
 			xAxisData = make([]string, len(sampledTimes))
 			currentData = make([]opts.LineData, len(sampledValues))
 
@@ -1519,23 +1354,32 @@ func (g *GraphicsGenerator) generateCurrentChart(records []parser.EnemeterRecord
 		}
 	}
 
-	fmt.Printf("Final current chart will have %d data points\n", len(xAxisData))
+	// Check if we have any data points
+	if len(xAxisData) == 0 || len(currentData) == 0 {
+		return "", fmt.Errorf("no valid data points to generate chart")
+	}
 
 	// Add data to chart
 	line.SetXAxis(xAxisData).
-		AddSeries(fmt.Sprintf("Current (%s)", currentUnit), currentData).
+		AddSeries("Current", currentData).
 		SetSeriesOptions(
 			charts.WithLineChartOpts(opts.LineChart{
 				Smooth: opts.Bool(true),
+			}),
+			charts.WithAreaStyleOpts(opts.AreaStyle{
+				Opacity: 0.2,
 			}),
 			charts.WithMarkLineNameTypeItemOpts(opts.MarkLineNameTypeItem{
 				Name: "Average",
 				Type: "average",
 			}),
+			charts.WithMarkPointNameTypeItemOpts(opts.MarkPointNameTypeItem{
+				Name: "Max",
+				Type: "max",
+			}),
 		)
 
 	// Create output file
-	fmt.Println("Creating current chart file...")
 	filename := filepath.Join(g.outputDir, "current_chart.html")
 	f, err := os.Create(filename)
 	if err != nil {
@@ -1544,16 +1388,14 @@ func (g *GraphicsGenerator) generateCurrentChart(records []parser.EnemeterRecord
 	defer f.Close()
 
 	// Render the chart
-	fmt.Println("Rendering current chart to file...")
 	if err := line.Render(f); err != nil {
 		return "", err
 	}
 
-	fmt.Println("Current chart generation completed successfully!")
 	return filename, nil
 }
 
-// Add the generateTemperatureChart function
+// generateTemperatureChart creates a chart showing temperature over time
 func (g *GraphicsGenerator) generateTemperatureChart(records []parser.EnemeterRecord) (string, error) {
 	// Create a line chart
 	line := charts.NewLine()
@@ -1573,37 +1415,7 @@ func (g *GraphicsGenerator) generateTemperatureChart(records []parser.EnemeterRe
 		startTime.Format("2006-01-02 15:04:05"),
 		duration.Round(time.Second).String())
 
-	// Add progress reporting for large datasets
-	fmt.Printf("Preparing data for temperature chart (%d records)...\n", len(records))
-
-	// For extremely large datasets, do pre-sampling
-	const maxRecordsToProcess = 100000
-	var recordsToProcess []parser.EnemeterRecord
-
-	if len(records) > maxRecordsToProcess {
-		fmt.Printf("Dataset very large (%d records). Pre-sampling to %d records...\n",
-			len(records), maxRecordsToProcess)
-
-		step := float64(len(records)) / float64(maxRecordsToProcess)
-		recordsToProcess = make([]parser.EnemeterRecord, 0, maxRecordsToProcess)
-
-		for i := 0.0; i < float64(len(records)); i += step {
-			idx := int(i)
-			if idx >= len(records) {
-				continue
-			}
-			recordsToProcess = append(recordsToProcess, records[idx])
-		}
-
-		if len(recordsToProcess) > 0 && recordsToProcess[len(recordsToProcess)-1].Timestamp != records[len(records)-1].Timestamp {
-			recordsToProcess = append(recordsToProcess, records[len(records)-1])
-		}
-
-		fmt.Printf("Pre-sampled to %d records\n", len(recordsToProcess))
-	} else {
-		recordsToProcess = records
-	}
-
+	// Set up chart options with title, subtitle, and axis labels
 	line.SetGlobalOptions(
 		charts.WithInitializationOpts(opts.Initialization{
 			Theme:  g.chartTheme,
@@ -1662,60 +1474,28 @@ func (g *GraphicsGenerator) generateTemperatureChart(records []parser.EnemeterRe
 		}),
 	)
 
-	// Prepare data for chart
-	fmt.Println("Processing temperature data points...")
-	xAxisData := make([]string, 0, len(recordsToProcess))
-	tempData := make([]opts.LineData, 0, len(recordsToProcess))
-
-	minTimeDelta := 1.0 // seconds
-	if len(records) > 500000 {
-		minTimeDelta = 5.0 // For very large datasets, increase minimum time between points
-	}
-
-	lastTimestampAdded := startTime.Add(-time.Second) // Ensure first point is always added
-	reportInterval := len(recordsToProcess) / 10      // Report progress 10 times
-	if reportInterval < 1 {
-		reportInterval = 1
-	}
-
-	for i, record := range recordsToProcess {
-		// Skip points with excessive intervals to avoid visual gaps
-		if i > 0 && record.Timestamp.Sub(recordsToProcess[i-1].Timestamp) > time.Minute*5 {
-			continue
-		}
-
-		// Skip if less than minTimeDelta since last added point
-		if record.Timestamp.Sub(lastTimestampAdded).Seconds() < minTimeDelta && i > 0 {
-			continue
-		}
-		lastTimestampAdded = record.Timestamp
-
+	// Process data in parallel using the chunkedPreprocess helper
+	processFunc := func(record parser.EnemeterRecord, timeFromStart float64) (string, interface{}, bool) {
 		adapter := NewAdapter(record)
-		temp := float64(adapter.GetTemperature()) * tempFactor // Apply temperature scaling
-
-		// Calculate time from start with scaling factor
-		timeFromStart := record.Timestamp.Sub(startTime).Seconds() * timeFactor
+		temp := adapter.GetTemperatureCelsius() * tempFactor
 		timeRounded := fmt.Sprintf("%.2f", timeFromStart)
 
-		xAxisData = append(xAxisData, timeRounded)
-		tempData = append(tempData, opts.LineData{
-			Value: temp,
-			Name:  record.Timestamp.Format(g.timeFormat), // Keep absolute time in tooltip
-		})
-
-		// Report progress for large datasets
-		if len(recordsToProcess) > 10000 && i > 0 && i%reportInterval == 0 {
-			fmt.Printf("Processed %d/%d temperature points (%.1f%%)\n",
-				i, len(recordsToProcess), float64(i)*100/float64(len(recordsToProcess)))
-		}
+		return timeRounded, temp, true
 	}
+
+	xAxisData, tempData := chunkedPreprocess(
+		records,
+		startTime,
+		processFunc,
+		timeFactor,
+		"Temperature chart",
+	)
 
 	// Apply downsampling if needed
 	if len(xAxisData) > g.maxDataPoints {
 		fmt.Printf("Downsampling from %d to %d data points using '%s' algorithm...\n",
 			len(xAxisData), g.maxDataPoints, g.samplingMode)
 
-		// Same downsampling logic as in other charts
 		times := make([]time.Time, 0, len(xAxisData))
 		values := make([]float64, 0, len(tempData))
 
@@ -1738,11 +1518,9 @@ func (g *GraphicsGenerator) generateTemperatureChart(records []parser.EnemeterRe
 			values = append(values, tempValue)
 		}
 
-		// Only downsample if we have data
 		if len(times) > 0 && len(values) > 0 {
 			sampledTimes, sampledValues := g.downsampleData(times, values, g.maxDataPoints)
 
-			// Convert back to chart format
 			xAxisData = make([]string, len(sampledTimes))
 			tempData = make([]opts.LineData, len(sampledValues))
 
@@ -1757,26 +1535,32 @@ func (g *GraphicsGenerator) generateTemperatureChart(records []parser.EnemeterRe
 		}
 	}
 
-	fmt.Printf("Final temperature chart will have %d data points\n", len(xAxisData))
+	// Check if we have any data points
+	if len(xAxisData) == 0 || len(tempData) == 0 {
+		return "", fmt.Errorf("no valid data points to generate chart")
+	}
 
 	// Add data to chart
 	line.SetXAxis(xAxisData).
-		AddSeries(fmt.Sprintf("Temperature (%s)", tempUnit), tempData).
+		AddSeries("Temperature", tempData).
 		SetSeriesOptions(
 			charts.WithLineChartOpts(opts.LineChart{
 				Smooth: opts.Bool(true),
 			}),
 			charts.WithAreaStyleOpts(opts.AreaStyle{
-				Opacity: 0.1,
+				Opacity: 0.2,
 			}),
 			charts.WithMarkLineNameTypeItemOpts(opts.MarkLineNameTypeItem{
 				Name: "Average",
 				Type: "average",
 			}),
+			charts.WithMarkPointNameTypeItemOpts(opts.MarkPointNameTypeItem{
+				Name: "Max",
+				Type: "max",
+			}),
 		)
 
 	// Create output file
-	fmt.Println("Creating temperature chart file...")
 	filename := filepath.Join(g.outputDir, "temperature_chart.html")
 	f, err := os.Create(filename)
 	if err != nil {
@@ -1785,11 +1569,9 @@ func (g *GraphicsGenerator) generateTemperatureChart(records []parser.EnemeterRe
 	defer f.Close()
 
 	// Render the chart
-	fmt.Println("Rendering temperature chart to file...")
 	if err := line.Render(f); err != nil {
 		return "", err
 	}
 
-	fmt.Println("Temperature chart generation completed successfully!")
 	return filename, nil
 }

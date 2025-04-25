@@ -65,3 +65,12 @@ func (a EnemeterRecordAdapter) AbsPowerWatts() float64 {
 	}
 	return power
 }
+
+// GetEnergyJoules returns the energy in joules
+// This is a placeholder since we can't directly measure energy from a single record
+// The actual energy calculation is done in EnergyCalculation.CalculateCumulativeEnergy
+func (a EnemeterRecordAdapter) GetEnergyJoules() float64 {
+	// This is just a placeholder as energy is calculated from power over time
+	// and not directly available in a single record
+	return 0.0
+}

@@ -48,7 +48,7 @@ make build
 Process a CSV file with required parameters:
 
 ```bash
-./enemeter-data-processing process --input=data/esp32.csv --start="2023-04-01 08:00:00"
+./enemeter-data-processing process --input=data/esp32.csv --start="2025-04-01 08:00:00"
 ```
 
 The `--start` parameter specifies the starting time of the measurements and is required. 
@@ -57,7 +57,7 @@ The `--start` parameter specifies the starting time of the measurements and is r
 Save results to a text file:
 
 ```bash
-./enemeter-data-processing process --input=data/esp32.csv --start="2023-04-01 08:00:00" --output=esp32_report.txt
+./enemeter-data-processing process --input=data/esp32.csv --start="2025-04-01 08:00:00" --output=esp32_report.txt
 ```
 
 ## Command Reference
@@ -198,41 +198,41 @@ For large datasets, the tool offers three downsampling methods to maintain chart
 
 Generate a power consumption chart:
 ```bash
-./enemeter-data-processing graphics --input=data/esp32.csv --start="2023-04-01 08:00:00" --type=power
+./enemeter-data-processing graphics --input=data/esp32.csv --start="2025-04-01 08:00:00" --type=power
 ```
 
 Generate a voltage chart with custom scales:
 ```bash
-./enemeter-data-processing graphics --input=data/esp32.csv --start="2023-04-01 08:00:00" --type=voltage --voltage-scale=millivolts --time-scale=minutes
+./enemeter-data-processing graphics --input=data/esp32.csv --start="2025-04-01 08:00:00" --type=voltage --voltage-scale=millivolts --time-scale=minutes
 ```
 
 Generate an energy chart with custom output directory:
 ```bash
-./enemeter-data-processing graphics --input=data/esp32.csv --start="2023-04-01 08:00:00" --type=energy --output-dir=./my-charts
+./enemeter-data-processing graphics --input=data/esp32.csv --start="2025-04-01 08:00:00" --type=energy --output-dir=./my-charts
 ```
 
 #### Performance Optimization Examples
 
 Process a very large file with optimized settings:
 ```bash
-./enemeter-data-processing graphics --input=big-data.csv --start="2023-04-01 08:00:00" --type=power --max-points=1000 --sampling=lttb
+./enemeter-data-processing graphics --input=big-data.csv --start="2025-04-01 08:00:00" --type=power --max-points=1000 --sampling=lttb
 ```
 
 Use streaming mode for efficient memory usage:
 ```bash
-./enemeter-data-processing graphics --input=big-data.csv --start="2023-04-01 08:00:00" --type=power --stream --sample=10
+./enemeter-data-processing graphics --input=big-data.csv --start="2025-04-01 08:00:00" --type=power --stream --sample=10
 ```
 
 #### Advanced Chart Configuration
 
 Generate a power chart with kilowatt units and hour-based time scale:
 ```bash
-./enemeter-data-processing graphics --input=data/esp32.csv --start="2023-04-01 08:00:00" --type=power --power-scale=kilowatts --time-scale=hours
+./enemeter-data-processing graphics --input=data/esp32.csv --start="2025-04-01 08:00:00" --type=power --power-scale=kilowatts --time-scale=hours
 ```
 
 Generate an energy chart with kilowatt-hour units:
 ```bash
-./enemeter-data-processing graphics --input=data/esp32.csv --start="2023-04-01 08:00:00" --type=energy --energy-scale=kilowatt-hours
+./enemeter-data-processing graphics --input=data/esp32.csv --start="2025-04-01 08:00:00" --type=energy --energy-scale=kilowatt-hours
 ```
 
 ### Best Practices for Chart Generation
@@ -275,6 +275,135 @@ Charts are saved as HTML files in the specified output directory (default: `./ch
 
 These HTML files can be opened in any web browser and don't require an internet connection or special software.
 
+## Performance Optimization Guidelines
+
+### Processing Large Datasets
+
+The tool now includes several optimizations for handling large datasets efficiently:
+
+1. **Parallel Processing**
+   - For files larger than 100MB, the tool automatically uses parallel processing
+   - Utilizes multiple CPU cores to speed up data processing
+   - Adapts to available system resources for optimal performance
+   - Processes data in chunks to balance memory usage and speed
+
+2. **Memory Efficiency**
+   - Streaming mode (`--stream`) processes data without loading the entire file into memory
+   - Progress reporting shows real-time status for large file processing
+   - Memory usage is continuously monitored to prevent out-of-memory errors
+   - Automatic garbage collection at strategic points to optimize memory usage
+
+3. **Adaptive Sampling**
+   - For extremely large files, automatic pre-sampling reduces memory requirements
+   - Intelligent downsampling preserves important data characteristics
+   - Several downsampling algorithms available (even, adaptive, lttb)
+   - Automatic detection of appropriate sampling rates based on file size
+
+### Command-line Options for Performance
+
+When working with large datasets (>100MB or >1M records), consider these options:
+
+```bash
+# Enable streaming mode for very large files
+./enemeter-data-processing process --input=large-data.csv --start="2025-04-01 08:00:00" --stream
+
+# Use sample rate for extremely large files
+./enemeter-data-processing process --input=very-large-data.csv --start="2025-04-01 08:00:00" --stream --sample=10
+
+# For chart generation with large files
+./enemeter-data-processing graphics --input=large-data.csv --start="2025-04-01 08:00:00" --type=power --max-points=1000
+```
+
+### Automatic Optimizations
+
+The tool now implements several automatic optimizations:
+
+- **Auto-detection of large files**: Automatically suggests or enables streaming mode
+- **Progress reporting**: Real-time feedback on processing large datasets
+- **Parallel chunking**: Large files are processed in parallel chunks
+- **Memory monitoring**: Continuous monitoring prevents out-of-memory errors
+- **Timeout adjustment**: Chart generation timeouts are dynamically calculated based on data size
+- **Error prevention**: Built-in safeguards against common issues like divide-by-zero errors
+
+### Recommended Settings by File Size
+
+| File Size | Records    | Recommended Settings                                   |
+|-----------|------------|-------------------------------------------------------|
+| <10MB     | <100K      | Default settings                                       |
+| 10-100MB  | 100K-1M    | `--stream`, `--max-points=2000`                        |
+| 100-500MB | 1M-5M      | `--stream`, `--sample=5`, `--max-points=1000`          |
+| >500MB    | >5M        | `--stream`, `--sample=10`, `--max-points=1000`, `--sampling=lttb` |
+
+### Advanced Performance Tuning
+
+For the most demanding datasets or resource-constrained environments:
+
+```bash
+# Maximum performance settings for extremely large files
+./enemeter-data-processing process --input=massive-data.csv --start="2025-04-01 08:00:00" \
+  --stream --sample=20 --max-records=1000000
+
+# Memory-optimized chart generation
+./enemeter-data-processing graphics --input=massive-data.csv --start="2025-04-01 08:00:00" \
+  --type=power --max-points=500 --sampling=even --time-scale=hours
+```
+
+### Monitoring Performance
+
+The tool now provides detailed performance metrics during processing:
+
+- Memory usage statistics
+- Processing speed (records/second)
+- Completion percentage
+- Estimated time remaining (for very large files)
+- Data point density metrics
+
+These metrics help you determine if your chosen settings are appropriate for your dataset size and system capabilities.
+
+### Interactive Mode for Chart Generation
+
+When using the `graphics` command, the tool offers an interactive mode if you don't specify certain required options:
+
+- If no chart type is specified, you'll be prompted to select one
+- If no scale options are provided, you'll be prompted to choose appropriate scales
+- Recommendations are made based on your dataset size and characteristics
+
+Example interactive session:
+```
+./enemeter-data-processing graphics --input=data/data.csv --start="2025-04-01 08:00:00"
+
+Select a chart type to generate:
+1. Power
+2. Energy
+3. Voltage
+4. Current
+5. Temperature
+
+Enter your choice (1-5): 1
+Selected chart type: power
+
+Select X-axis time scale:
+1. Milliseconds
+2. Seconds (default)
+3. Minutes
+4. Hours
+5. Days
+
+Enter your choice (1-5): 4
+Selected X-axis time scale: hours
+
+Select Y-axis power scale:
+1. Microwatts
+2. Milliwatts
+3. Watts (default)
+4. Kilowatts
+
+Enter your choice (1-4): 
+Selected Y-axis power scale: watts
+```
+
+This interactive mode makes the tool more user-friendly, especially for new users who may not be familiar with all available options.
+
 ## Examples
 
 ### Process Command Examples
@@ -282,7 +411,7 @@ These HTML files can be opened in any web browser and don't require an internet 
 Process a CSV file and display all metrics:
 
 ```bash
-./enemeter-data-processing process --input=data/esp32.csv --start="2023-04-01 08:00:00"
+./enemeter-data-processing process --input=data/esp32.csv --start="2025-04-01 08:00:00"
 ```
 
 ### Memory-Efficient Processing for Large Files
@@ -290,7 +419,7 @@ Process a CSV file and display all metrics:
 Use streaming mode with sampling for very large files:
 
 ```bash
-./enemeter-data-processing process --input=big-data.csv --start="2023-04-01 10:15:30" --stream --sample=10
+./enemeter-data-processing process --input=big-data.csv --start="2025-04-01 10:15:30" --stream --sample=10
 ```
 
 This processes only every 10th record, reducing memory requirements.
@@ -301,10 +430,10 @@ To analyze data from a specific time period:
 
 ```bash
 # Analyze data between specific dates and times
-./enemeter-data-processing process --input=esp32.csv --start="2023-04-01 08:00:00" --end="2023-04-02 17:30:00"
+./enemeter-data-processing process --input=esp32.csv --start="2025-04-01 08:00:00" --end="2025-04-02 17:30:00"
 
 # Analyze data for a specific duration
-./enemeter-data-processing process --input=esp32.csv --start="2023-04-01 12:45:00" --window=24h
+./enemeter-data-processing process --input=esp32.csv --start="2025-04-01 12:45:00" --window=24h
 ```
 
 ### Extracting Specific Metrics
@@ -312,13 +441,13 @@ To analyze data from a specific time period:
 Get only temperature statistics in JSON format:
 
 ```bash
-./enemeter-data-processing process --input=esp32.csv --start="2023-04-01 08:00:00" --metric=temperature --format=json
+./enemeter-data-processing process --input=esp32.csv --start="2025-04-01 08:00:00" --metric=temperature --format=json
 ```
 
 Extract hourly energy consumption in CSV format:
 
 ```bash
-./enemeter-data-processing process --input=esp32.csv --start="2023-04-01 08:00:00" --metric=energy_by_hour --format=csv
+./enemeter-data-processing process --input=esp32.csv --start="2025-04-01 08:00:00" --metric=energy_by_hour --format=csv
 ```
 
 ### Filtering by Data Values
@@ -326,13 +455,13 @@ Extract hourly energy consumption in CSV format:
 Process only records with voltage between specified values:
 
 ```bash
-./enemeter-data-processing process --input=esp32.csv --start="2023-04-01 08:00:00" --volt-min=3500000 --volt-max=4200000
+./enemeter-data-processing process --input=esp32.csv --start="2025-04-01 08:00:00" --volt-min=3500000 --volt-max=4200000
 ```
 
 Process only records where temperature is above a certain threshold:
 
 ```bash
-./enemeter-data-processing process --input=esp32.csv --start="2023-04-01 08:00:00" --min-temp=25000
+./enemeter-data-processing process --input=esp32.csv --start="2025-04-01 08:00:00" --min-temp=25000
 ```
 
 ## Output Examples

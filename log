@@ -1,0 +1,40 @@
+Analyzing file: data/esp32.CSV
+
+Successfully parsed 1746010 records
+First record: 2023-04-01 08:00:10
+Last record: 2023-04-02 10:19:12
+Total duration: 26h19m2s (26.32 hours)
+
+Analyzing for time gaps...
+
+Gap Statistics:
+  Gaps > 1 minute: 0
+  Gaps > 10 minutes: 0
+  Gaps > 1 hour: 0
+  Largest gap: 11s at 2023-04-01 08:00:12
+
+Hourly Record Distribution:
+  00:00 - 00:59:  66183 records | █ 3.8%
+  01:00 - 01:59:  66138 records | █ 3.8%
+  02:00 - 02:59:  66079 records | █ 3.8%
+  03:00 - 03:59:  66024 records | █ 3.8%
+  04:00 - 04:59:  65987 records | █ 3.8%
+  05:00 - 05:59:  65927 records | █ 3.8%
+  06:00 - 06:59:  65872 records | █ 3.8%
+  07:00 - 07:59:  65826 records | █ 3.8%
+  08:00 - 08:59: 132411 records | ███ 7.6%
+  09:00 - 09:59: 132686 records | ███ 7.6%
+  10:00 - 10:59:  87751 records | ██ 5.0%
+  11:00 - 11:59:  66871 records | █ 3.8%
+  12:00 - 12:59:  66810 records | █ 3.8%
+  13:00 - 13:59:  66756 records | █ 3.8%
+  14:00 - 14:59:  66707 records | █ 3.8%
+  15:00 - 15:59:  66654 records | █ 3.8%
+  16:00 - 16:59:  66594 records | █ 3.8%
+  17:00 - 17:59:  66545 records | █ 3.8%
+  18:00 - 18:59:  66497 records | █ 3.8%
+  19:00 - 19:59:  66444 records | █ 3.8%
+  20:00 - 20:59:  66390 records | █ 3.8%
+  21:00 - 21:59:  66338 records | █ 3.8%
+  22:00 - 22:59:  66290 records | █ 3.8%
+  23:00 - 23:59:  66230 records | █ 3.8%
