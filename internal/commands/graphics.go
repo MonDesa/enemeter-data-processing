@@ -538,14 +538,24 @@ func GraphicsCommand(options GraphicsOptions) error {
 		// For large files in streaming mode, use sample rate
 		if recordCount > 1000000 && options.SampleRate == 1 {
 			fmt.Println("Large file detected. Setting sample rate to 5 for better performance.")
+
+			// First, get time range boundaries to preserve full time range
+			fmt.Println("Getting file time boundaries to preserve full time range...")
+			boundaries, err := csvParser.GetTimeRangeBoundaries()
+			if err != nil {
+				fmt.Printf("Warning: Couldn't determine time range: %v\n", err)
+			}
+
+			// Now update filter options with sampling AND boundary preservation
 			csvParser.WithFilterOptions(parser.FilterOptions{
-				StartTime:     filterOptions.StartTime,
-				EndTime:       filterOptions.EndTime,
-				SampleRate:    5, // Sample 1 in 5 records for visualization
-				MaxRecords:    filterOptions.MaxRecords,
-				TempThreshold: filterOptions.TempThreshold,
-				VoltageRange:  filterOptions.VoltageRange,
-				CurrentRange:  filterOptions.CurrentRange,
+				StartTime:                   filterOptions.StartTime,
+				EndTime:                     filterOptions.EndTime,
+				SampleRate:                  5, // Sample 1 in 5 records for visualization
+				MaxRecords:                  filterOptions.MaxRecords,
+				TempThreshold:               filterOptions.TempThreshold,
+				VoltageRange:                filterOptions.VoltageRange,
+				CurrentRange:                filterOptions.CurrentRange,
+				PreserveTimeRangeBoundaries: boundaries, // Important: maintain full time range
 			})
 		}
 
@@ -558,14 +568,23 @@ func GraphicsCommand(options GraphicsOptions) error {
 		// For regular mode with very large datasets, apply sampling
 		if recordCount > 1000000 && options.SampleRate == 1 {
 			fmt.Println("Large file detected. Setting sample rate to 5 for better performance.")
+
+			// First, get time range boundaries to preserve full time range
+			fmt.Println("Getting file time boundaries to preserve full time range...")
+			boundaries, err := csvParser.GetTimeRangeBoundaries()
+			if err != nil {
+				fmt.Printf("Warning: Couldn't determine time range: %v\n", err)
+			}
+
 			csvParser.WithFilterOptions(parser.FilterOptions{
-				StartTime:     filterOptions.StartTime,
-				EndTime:       filterOptions.EndTime,
-				SampleRate:    5, // Sample 1 in 5 records
-				MaxRecords:    filterOptions.MaxRecords,
-				TempThreshold: filterOptions.TempThreshold,
-				VoltageRange:  filterOptions.VoltageRange,
-				CurrentRange:  filterOptions.CurrentRange,
+				StartTime:                   filterOptions.StartTime,
+				EndTime:                     filterOptions.EndTime,
+				SampleRate:                  5, // Sample 1 in 5 records
+				MaxRecords:                  filterOptions.MaxRecords,
+				TempThreshold:               filterOptions.TempThreshold,
+				VoltageRange:                filterOptions.VoltageRange,
+				CurrentRange:                filterOptions.CurrentRange,
+				PreserveTimeRangeBoundaries: boundaries, // Important: maintain full time range
 			})
 		}
 
@@ -579,6 +598,12 @@ func GraphicsCommand(options GraphicsOptions) error {
 		// Calculate metrics
 		calculator := metrics.NewEnergyCalculator(records).WithOptions(metricsOptions)
 		energyMetrics = calculator.CalculateMetrics()
+	}
+
+	// Add this: Check for time range issues and fix if needed
+	records, err = checkTimeRangeIssues(records, options)
+	if err != nil {
+		fmt.Printf("Warning: %v\n", err)
 	}
 
 	// After parsing records, analyze and log time range
@@ -783,4 +808,63 @@ func getYAxisScale(options GraphicsOptions) string {
 	default:
 		return "unknown"
 	}
+}
+
+// Add implementation of checkTimeRangeIssues function
+func checkTimeRangeIssues(records []parser.EnemeterRecord, options GraphicsOptions) ([]parser.EnemeterRecord, error) {
+	if len(records) == 0 {
+		return records, nil
+	}
+
+	// Get the current time range
+	startRecord := records[0]
+	endRecord := records[len(records)-1]
+	duration := endRecord.Timestamp.Sub(startRecord.Timestamp)
+
+	// Detect serious time range truncation for large dataset
+	expectedMinHours := float64(len(records)) / 100000 * 5 // Heuristic: ~20k records per hour
+	if len(records) > 500000 && duration.Hours() < expectedMinHours/2 {
+		fmt.Printf("\n⚠️ WARNING: Possible time range truncation detected!\n")
+		fmt.Printf("   Data has %d records but only spans %.1f hours\n", len(records), duration.Hours())
+
+		// Try to recover by re-parsing the file with boundary preservation
+		fmt.Printf("   Attempting time range recovery...\n")
+
+		csvParser := parser.NewCSVParser(options.InputFile)
+
+		// First get time boundaries with minimal overhead
+		fmt.Println("   Getting file time boundaries...")
+		boundaryParser := parser.NewCSVParser(options.InputFile)
+		boundaryParser.WithFilterOptions(parser.FilterOptions{
+			StartTime: &startRecord.Timestamp,
+		})
+
+		boundaries, err := boundaryParser.GetTimeRangeBoundaries()
+		if err != nil {
+			return records, fmt.Errorf("couldn't determine file boundaries: %v", err)
+		}
+
+		// Now re-parse with aggressive sampling but preserve boundaries
+		startTime, _ := parseTimeString(options.StartTime)
+		filterOptions := parser.FilterOptions{
+			StartTime:                   &startTime,
+			SampleRate:                  20, // More aggressive sampling but ensure we get the time range right
+			PreserveTimeRangeBoundaries: boundaries,
+		}
+
+		csvParser.WithFilterOptions(filterOptions)
+		fixedRecords, err := csvParser.Parse()
+		if err != nil {
+			return records, fmt.Errorf("recovery parsing failed: %v", err)
+		}
+
+		if len(fixedRecords) > 0 {
+			newDuration := fixedRecords[len(fixedRecords)-1].Timestamp.Sub(fixedRecords[0].Timestamp)
+			fmt.Printf("   Recovery successful: new time range %.2f hours with %d records\n",
+				newDuration.Hours(), len(fixedRecords))
+			return fixedRecords, nil
+		}
+	}
+
+	return records, nil
 }

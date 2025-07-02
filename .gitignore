@@ -2,6 +2,5 @@
 dist/
 
 # Exclude generated and input files
-data/
 charts/
 .env

@@ -20,9 +20,15 @@ const (
 	TimeUnitDay    TimeUnit = "day"
 )
 
+// EnergyCalculationOptions provides options for energy calculation
+type EnergyCalculationOptions struct {
+	PreserveTimeRange bool
+}
+
 // EnergyCalculation handles energy and power calculations from sensor data
 type EnergyCalculation struct {
 	records []parser.EnemeterRecord
+	options EnergyCalculationOptions
 }
 
 // NewEnergyCalculation creates a new energy calculation instance
@@ -30,6 +36,12 @@ func NewEnergyCalculation(records []parser.EnemeterRecord) *EnergyCalculation {
 	return &EnergyCalculation{
 		records: records,
 	}
+}
+
+// WithOptions sets options for the energy calculation
+func (ec *EnergyCalculation) WithOptions(options EnergyCalculationOptions) *EnergyCalculation {
+	ec.options = options
+	return ec
 }
 
 // CalculateCumulativeEnergy calculates energy consumption over time
@@ -232,6 +244,67 @@ func (ec *EnergyCalculation) CalculateCumulativeEnergy() ([]time.Time, []float64
 			// Add the point with adjusted energy
 			timestamps = append(timestamps, points[i].timestamp)
 			energyValues = append(energyValues, cumulativeEnergy+points[i].energy)
+		}
+	}
+
+	// Always make sure to include first and last timestamps from the original records
+	// even if they might be filtered by sampling
+	if ec.options.PreserveTimeRange && len(ec.records) > 0 {
+		firstRecordTime := ec.records[0].Timestamp
+		lastRecordTime := ec.records[len(ec.records)-1].Timestamp
+
+		// Check if the first and last points are already included
+		hasFirst := false
+		hasLast := false
+
+		for _, t := range timestamps {
+			if t.Equal(firstRecordTime) || t.Sub(firstRecordTime).Abs() < 2*time.Second {
+				hasFirst = true
+			}
+			if t.Equal(lastRecordTime) || t.Sub(lastRecordTime).Abs() < 2*time.Second {
+				hasLast = true
+			}
+		}
+
+		// Add first point if missing
+		if !hasFirst && len(timestamps) > 0 {
+			// Insert at beginning
+			timestamps = append([]time.Time{firstRecordTime}, timestamps...)
+			energyValues = append([]float64{0}, energyValues...)
+			fmt.Println("Added first timestamp to ensure full time range")
+		}
+
+		// Add last point if missing
+		if !hasLast && len(timestamps) > 1 {
+			// Add at end
+			timestamps = append(timestamps, lastRecordTime)
+			// Use last available energy value
+			energyValues = append(energyValues, energyValues[len(energyValues)-1])
+			fmt.Println("Added last timestamp to ensure full time range")
+		}
+
+		// Sort to ensure chronological order
+		if !hasFirst || !hasLast {
+			// Create pairs
+			type timeEnergyPair struct {
+				time   time.Time
+				energy float64
+			}
+			pairs := make([]timeEnergyPair, len(timestamps))
+			for i := range timestamps {
+				pairs[i] = timeEnergyPair{timestamps[i], energyValues[i]}
+			}
+
+			// Sort by timestamp
+			sort.Slice(pairs, func(i, j int) bool {
+				return pairs[i].time.Before(pairs[j].time)
+			})
+
+			// Rebuild slices
+			for i := range pairs {
+				timestamps[i] = pairs[i].time
+				energyValues[i] = pairs[i].energy
+			}
 		}
 	}
 

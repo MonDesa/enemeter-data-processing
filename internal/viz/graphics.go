@@ -635,6 +635,12 @@ func (g *GraphicsGenerator) generateEnergyChart(records []parser.EnemeterRecord,
 	endTime := records[len(records)-1].Timestamp
 	duration := endTime.Sub(startTime)
 
+	// Debug log to check actual duration
+	fmt.Printf("Chart time range: %s to %s (%.2f hours)\n",
+		startTime.Format("2006-01-02 15:04:05"),
+		endTime.Format("2006-01-02 15:04:05"),
+		duration.Hours())
+
 	// Configure chart
 	title := "Cumulative Energy Consumption"
 	subtitle := fmt.Sprintf("From: %s | Duration: %s | Total: %.4f %s",
@@ -707,7 +713,9 @@ func (g *GraphicsGenerator) generateEnergyChart(records []parser.EnemeterRecord,
 
 	// Use our energy calculation utility for accurate energy calculation
 	fmt.Println("Calculating cumulative energy...")
-	energyCalc := NewEnergyCalculation(records)
+	energyCalc := NewEnergyCalculation(records).WithOptions(EnergyCalculationOptions{
+		PreserveTimeRange: true, // Add this flag to your EnergyCalculation struct
+	})
 	timestamps, energyValues := energyCalc.CalculateCumulativeEnergy()
 
 	// Debug the time range of our energy data
